@@ -11,7 +11,7 @@ algoritmo de Matiz (Hue) de **Namikawa et al. (2016)** aprimorado com filtros
 
 > Status: protótipo em desenvolvimento (v0.1.0), já testável.
 
-## Instalação
+## Instalação Teste
 
 ```bash
 pip install git+https://github.com/SEU_USUARIO/wfi2mask.git
