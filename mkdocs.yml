@@ -1,0 +1,40 @@
+site_name: wfi2mask
+site_description: Detecção automática de água em imagens WFI (CBERS-4, CBERS-4A e Amazonia-1)
+site_url: https://wfi2mask.readthedocs.io
+repo_url: https://github.com/SEU_USUARIO/wfi2mask
+repo_name: wfi2mask
+
+theme:
+  name: material
+  language: pt-BR
+  palette:
+    - scheme: default
+      primary: blue
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Modo escuro
+    - scheme: slate
+      primary: blue
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Modo claro
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+nav:
+  - Início: index.md
+  - Instalação: instalacao.md
+  - Guia rápido: quickstart.md
+  - Referência da API: api.md
+  - Dados HAND: hand.md
+  - Algoritmo e limitações: algoritmo.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - tables
