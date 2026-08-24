@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wfi2mask"
-version = "0.1.0"
-description = "Automated water mask detection from WFI images (CBERS-4, CBERS-4A, Amazonia-1) using the Namikawa et al. (2016) Hue algorithm enhanced with NDWI, HAND and NIR filters."
+version = "0.2.0"
+description = "Automated water mask detection from WFI images (CBERS-4, CBERS-4A, Amazonia-1) and Sentinel-2 using the Namikawa et al. (2016) Hue algorithm enhanced with NDWI, HAND and NIR filters."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = [
     "remote-sensing", "water-detection", "CBERS", "Amazonia-1", "WFI",
-    "INPE", "water-mask", "NDWI", "HAND",
+    "Sentinel-2", "INPE", "water-mask", "NDWI", "HAND",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -38,12 +38,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "build", "twine"]
-docs = ["mkdocs>=1.5", "mkdocs-material>=9.0"]
+docs = ["sphinx>=7.0", "sphinx-rtd-theme>=2.0", "myst-parser>=2.0"]
 
 [project.urls]
-Homepage = "https://github.com/SEU_USUARIO/wfi2mask"
+Homepage = "https://github.com/silvaglx/wfi2mask"
 Documentation = "https://wfi2mask.readthedocs.io"
-Repository = "https://github.com/SEU_USUARIO/wfi2mask"
+Repository = "https://github.com/silvaglx/wfi2mask"
 
 [tool.setuptools.packages.find]
 where = ["src"]

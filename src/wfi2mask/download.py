@@ -114,9 +114,11 @@ def _analyze_bbox_coverage(features: list, bbox: list) -> None:
 def _s2_clean_dates(bbox, d0: date, d1: date, max_cloud: float) -> set | None:
     """Dates with a clean Sentinel-2 acquisition over the bbox (cloud proxy).
 
-    WFI metadata carries no usable cloud-cover figure, so cloud screening is
-    done by matchup: keep WFI dates within +/-1 day of a Sentinel-2 scene
-    whose eo:cloud_cover <= max_cloud.
+    EXPERIMENTAL (on hold): alternative date-level cloud screening by matchup
+    — keep WFI dates within +/-1 day of a Sentinel-2 scene whose
+    eo:cloud_cover <= max_cloud. The primary cloud filter is the INPE
+    catalog's own scene-level cloud percentage (``max_cloud``); this matchup
+    is kept for testing as a possible future refinement.
     """
     try:
         from pystac_client import Client
@@ -150,6 +152,9 @@ def get_toa(
     max_images=None,
     user=None,
     outdir="./wfi2mask_data",
+    s2_matchup=False,
+    esun=None,
+    acc=None,
 ):
     """Search the INPE catalog, download WFI scenes and convert them to TOA.
 
@@ -160,14 +165,19 @@ def get_toa(
         With a single date, the search covers a +/-15-day window and the
         scene(s) nearest to the requested date are kept.
     bbox : list
-        ``[lon_min, lat_min, lon_max, lat_max]`` in EPSG:4326.
+        ``[lon_min, lat_min, lon_max, lat_max]`` in EPSG:4326. The TOA
+        products are CROPPED to this bbox (the raw DN download still covers
+        the full scene, as served by the INPE catalog).
     product : str | list
         ``'amazonia1'``, ``'cbers4a'``, ``'cbers4'``, ``'all'`` (default) or
         INPE collection ids.
     max_cloud : float
-        ``-1`` (default) disables cloud screening. Any value >= 0 activates
-        the Sentinel-2 matchup: only WFI dates within +/-1 day of a
-        Sentinel-2 scene with cloud cover <= ``max_cloud`` % are kept.
+        ``-1`` (default) disables cloud screening. Any value >= 0 filters the
+        INPE catalog query by its scene-level cloud percentage
+        (``cloud <= max_cloud``). NOTE: the percentage refers to the WHOLE
+        WFI scene (684-866 km swath) — a partially cloudy scene may still be
+        perfectly clear over your bbox, so a strict value can discard usable
+        dates.
     max_images : int, optional
         Cap on the number of scenes downloaded (per satellite), most recent
         first. Works with or without ``max_cloud``.
@@ -176,6 +186,15 @@ def get_toa(
     outdir : str
         Base output directory. Raw DN data goes to ``outdir/raw/<satellite>/``
         and TOA products to ``outdir/toa/<satellite>/``.
+    s2_matchup : bool
+        EXPERIMENTAL (default False): additionally screen dates by matchup
+        with Sentinel-2 (keep WFI dates within +/-1 day of a Sentinel-2
+        acquisition with eo:cloud_cover <= ``max_cloud``). Kept on hold for
+        testing; requires ``max_cloud >= 0``.
+    esun, acc : dict, optional
+        Calibration overrides — ``{band: value}`` or ``{satellite: {band:
+        value}}``. Defaults: ``wfi2mask.constants.ESUN`` and
+        ``ACC_OVERRIDE`` (for CBERS-4 the ACC comes from each scene's XML).
 
     Returns
     -------
@@ -218,15 +237,27 @@ def get_toa(
     api = Cbers4aAPI(user)
 
     # ------------------------------------------------------------------ #
-    # Optional Sentinel-2 cloud matchup                                   #
+    # Cloud screening                                                     #
     # ------------------------------------------------------------------ #
+    cloud_screening = max_cloud is not None and float(max_cloud) >= 0
+    inpe_cloud = float(max_cloud) if cloud_screening else 100.0
+    if cloud_screening:
+        log(f"Filtro de nuvem ativo (max_cloud={max_cloud}%): usando o percentual "
+            f"de nuvem do catálogo INPE (nível de cena).")
+        warn("O percentual refere-se à CENA inteira (faixa de 684–866 km) — "
+             "uma cena parcialmente nublada pode estar limpa sobre o seu bbox.")
+
+    # EXPERIMENTAL: date-level Sentinel-2 matchup (on hold / em teste)
     clean_dates = None
-    if max_cloud is not None and float(max_cloud) >= 0:
-        log(f"Filtro de nuvem ativo (max_cloud={max_cloud}%): executando matchup "
-            f"com Sentinel-2 (tolerância +/-{S2_MATCHUP_TOLERANCE_DAYS} dia)...")
-        clean_dates = _s2_clean_dates(bbox, d0, d1, float(max_cloud))
-        if clean_dates is not None:
-            log(f"  {len(clean_dates)} datas Sentinel-2 limpas encontradas no período.")
+    if s2_matchup:
+        if not cloud_screening:
+            warn("s2_matchup=True requer max_cloud >= 0 — matchup ignorado.")
+        else:
+            log(f"[experimental] Matchup Sentinel-2 ativo (tolerância "
+                f"+/-{S2_MATCHUP_TOLERANCE_DAYS} dia)...")
+            clean_dates = _s2_clean_dates(bbox, d0, d1, float(max_cloud))
+            if clean_dates is not None:
+                log(f"  {len(clean_dates)} datas Sentinel-2 limpas encontradas no período.")
 
     results = []
     for collection_id, satellite in collections.items():
@@ -237,7 +268,7 @@ def get_toa(
                 location=bbox,
                 initial_date=d0,
                 end_date=d1,
-                cloud=100,
+                cloud=inpe_cloud,
                 limit=200,
                 collections=[collection_id],
             )
@@ -250,7 +281,7 @@ def get_toa(
         if not features:
             continue
 
-        # Cloud matchup filter
+        # EXPERIMENTAL Sentinel-2 matchup filter (s2_matchup=True)
         if clean_dates is not None:
             tol = timedelta(days=S2_MATCHUP_TOLERANCE_DAYS)
             kept = []
@@ -258,7 +289,8 @@ def get_toa(
                 fd = _feature_date(feat)
                 if fd and any(abs(fd - cd) <= tol for cd in clean_dates):
                     kept.append(feat)
-            log(f"  Matchup Sentinel-2: {len(kept)} de {len(features)} cenas mantidas.")
+            log(f"  [experimental] Matchup Sentinel-2: {len(kept)} de "
+                f"{len(features)} cenas mantidas.")
             features = kept
             if not features:
                 warn("  Nenhuma cena WFI coincide com datas Sentinel-2 limpas.")
@@ -345,14 +377,17 @@ def get_toa(
                     continue
                 scene_dir = candidates[0]
             out_path = os.path.join(toa_dir, f"toa_{os.path.basename(scene_dir)}.tif")
-            meta = convert_scene_to_toa(scene_dir, out_path,
-                                        satellite=satellite_from_scene_id(sid) or satellite)
+            meta = convert_scene_to_toa(
+                scene_dir, out_path,
+                satellite=satellite_from_scene_id(sid) or satellite,
+                bbox=bbox, esun=esun, acc=acc,
+            )
             if meta:
                 results.append(meta)
 
     log("=" * 62)
-    log(f"Concluído: {len(results)} cena(s) TOA prontas.")
+    log(f"Concluído: {len(results)} cena(s) TOA prontas (recortadas no bbox).")
     log(f"  DN bruto: {os.path.abspath(raw_base)}/<satelite>/<cena>/")
     log(f"  TOA:      {os.path.abspath(toa_base)}/<satelite>/toa_<cena>.tif")
-    log("Use wfi2mask.get_water_mask(path=..., bbox=...) para gerar a máscara d'água.")
+    log("Use w2m.get_water_mask(path=...) para gerar a máscara d'água.")
     return results

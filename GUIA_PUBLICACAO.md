@@ -48,26 +48,20 @@ git init
 git add .
 git commit -m "wfi2mask v0.1.0 - versao inicial"
 git branch -M main
-git remote add origin https://github.com/SEU_USUARIO/wfi2mask.git
+git remote add origin https://github.com/silvaglx/wfi2mask.git
 git push -u origin main
 ```
 
 > Se o `git` pedir autenticação, use um *Personal Access Token*
 > (GitHub → Settings → Developer settings → Personal access tokens).
 
-4. **Importante:** substitua `SEU_USUARIO` pelo seu usuário real do GitHub
-   nos arquivos `pyproject.toml`, `README.md`, `mkdocs.yml`,
-   `docs/instalacao.md` e `src/wfi2mask/constants.py`
-   (busque por "SEU_USUARIO"), depois:
-
-```bash
-git add -A && git commit -m "Ajusta URLs do repositorio" && git push
-```
+4. ~~Substituir o placeholder `SEU_USUARIO`~~ — **já feito**: todos os
+   arquivos apontam para o usuário real `silvaglx`.
 
 A partir de agora **qualquer pessoa** já pode instalar com:
 
 ```bash
-pip install git+https://github.com/SEU_USUARIO/wfi2mask.git
+pip install git+https://github.com/silvaglx/wfi2mask.git
 ```
 
 ---

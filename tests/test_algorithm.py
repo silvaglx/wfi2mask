@@ -86,6 +86,23 @@ def test_invalid_pixels_excluded():
     assert not res["water"][0, 1]
 
 
+def test_variable_hue_window():
+    """hue_min/hue_max are parameters: the window (and its confidence
+    classes) must follow the values passed by the user."""
+    shape = (3, 3)
+    # constant bands -> p99 normalization gives (1,1,1) -> delta=0 -> hue=0
+    green = np.full(shape, 0.3)
+    red = np.full(shape, 0.3)
+    nir = np.full(shape, 0.3)
+    # ndwi_threshold=2 disables the NDWI promotion (NDWI is always <= 1)
+    res_default = classify_scene(green, red, nir, hand=None, ndwi_threshold=2.0)
+    assert np.all(res_default["confidence"] == 2)  # hue 0 < hue_min -> WATER95
+    res_custom = classify_scene(
+        green, red, nir, hand=None, ndwi_threshold=2.0, hue_min=0.0
+    )
+    assert np.all(res_custom["confidence"] == 1)  # window [0, 35) -> WATER
+
+
 def test_majority_composite():
     # 3 scenes, one pixel water in 2/3 (majority), another in 1/3
     water = np.zeros((3, 1, 2), dtype=bool)

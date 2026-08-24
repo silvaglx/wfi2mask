@@ -42,8 +42,10 @@ escuras). Ver [Dados HAND](hand.md).
 ### Filtro de brilho NIR
 
 Água sempre tem reflectância NIR baixa; telhados metálicos com NDWI
-marginalmente positivo são rejeitados por `NIR < 0,35` (escala de
-reflectância TOA `[0, ~1]`).
+marginalmente positivo são rejeitados pelo limiar NIR, escolhido
+automaticamente por cena: `NIR < 0,35` para WFI (reflectância TOA) e
+`NIR < 0,10` para Sentinel-2 (reflectância de superfície L2A, equivalente
+ao `NIR < 1000` da escala ×10 000 usada na validação).
 
 ## Agregação temporal — regra da maioria
 
@@ -77,11 +79,16 @@ máscara SCL, agregação simétrica):
   compensados pelo filtro NIR.
 * **Calibração CBERS-4** — valores ESUN aproximados (sem fonte validada);
   CBERS-4A e Amazonia-1 têm valores validados via RadCalNet.
-* **Sem máscara de nuvem WFI** — o matchup com Sentinel-2 é usado como
-  proxy na seleção de datas.
+* **Sem máscara de nuvem por pixel no WFI** — a triagem usa o percentual
+  de nuvem do catálogo INPE, que se refere à cena inteira (684–866 km) e
+  pode não representar o bbox; a composição pela maioria mitiga nuvens
+  residuais. Cenas Sentinel-2 (via `get_s2`) têm máscara por pixel (SCL).
+  Um matchup de datas com o Sentinel-2 existe em caráter experimental
+  (`s2_matchup=True`) e outras opções estão em avaliação.
 * **Transferência de limiares** — a janela de Matiz [16°, 35°) foi
   calibrada em RapidEye/Sentinel-2; pode precisar de recalibração para os
-  sensores WFI (use o histograma de Matiz como diagnóstico).
+  sensores WFI (use o histograma de Matiz como diagnóstico). Os limiares
+  são parametrizáveis via `hue_min`/`hue_max` em `get_water_mask`.
 * **Correção Terra–Sol ausente** — erro sazonal de ±3,3 % na TOA.
 
 ## Referências

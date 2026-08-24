@@ -30,10 +30,12 @@ automaticamente.
 | `WFI2MASK_HAND_URL` | URL base alternativa para os tiles |
 | `WFI2MASK_CACHE` | pasta de cache alternativa |
 
-Também é possível apontar uma pasta local com os tiles:
+Também é possível apontar uma pasta local com os tiles — **normalmente
+desnecessário**, já que o download é automático; útil apenas offline ou
+com tiles próprios:
 
 ```python
-wfi2mask.get_water_mask(..., hand_dir="D:/dados/hand")
+w2m.get_water_mask(..., hand_dir="D:/dados/hand")
 ```
 
 Se um tile não puder ser obtido, o pacote avisa e prossegue **sem** o
@@ -41,17 +43,22 @@ filtro HAND naquela área (com aviso explícito).
 
 ## Para mantenedores: hospedando os tiles
 
-Os tiles são distribuídos como *assets* de um **GitHub Release** do
-repositório (limite de 2 GB por arquivo — cada tile tem só dezenas de MB):
+Os tiles são distribuídos como *assets* do **GitHub Release**
+[`hand-v1`](https://github.com/silvaglx/wfi2mask/releases/tag/hand-v1)
+do repositório (34 tiles cobrindo o Brasil; limite de 2 GB por arquivo —
+cada tile tem só dezenas de MB):
 
 1. Extraia os tiles dos pacotes `hnd_s30w060.tar` / `hnd_s60w060.tar` do
    MERIT Hydro;
-2. No GitHub, crie um Release com a tag `hand-v1`;
-3. Anexe os arquivos `sXXwYYY_hnd.tif` individuais como assets;
-4. Confirme que `HAND_RELEASE_BASE_URL` em `src/wfi2mask/constants.py`
-   aponta para `https://github.com/SEU_USUARIO/wfi2mask/releases/download/hand-v1`.
+2. Anexe os arquivos `sXXwYYY_hnd.tif` individuais como assets do Release
+   `hand-v1`;
+3. `HAND_RELEASE_BASE_URL` em `src/wfi2mask/constants.py` aponta para
+   `https://github.com/silvaglx/wfi2mask/releases/download/hand-v1`.
 
-!!! note "Licença dos dados"
-    O MERIT Hydro é distribuído sob licença dupla CC-BY-NC 4.0 / ODbL 1.0.
-    A redistribuição dos tiles derivados deve citar Yamazaki et al. (2019)
-    e manter os termos da licença.
+```{admonition} Licença dos dados
+:class: note
+
+O MERIT Hydro é distribuído sob licença dupla CC-BY-NC 4.0 / ODbL 1.0.
+A redistribuição dos tiles derivados deve citar Yamazaki et al. (2019)
+e manter os termos da licença.
+```

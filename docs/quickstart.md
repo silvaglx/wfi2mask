@@ -1,11 +1,11 @@
 # Guia rápido
 
-## 1. Baixar imagens e gerar reflectância TOA
+## 1. Baixar imagens WFI e gerar reflectância TOA
 
 ```python
-import wfi2mask
+import wfi2mask as w2m
 
-resultado = wfi2mask.get_toa(
+resultado = w2m.get_toa(
     date="2025-07-01, 2025-09-30",          # intervalo de datas
     bbox=[-46.65, -23.85, -46.45, -23.65],  # Represa Billings/SP
     product="amazonia1",
@@ -20,14 +20,14 @@ O que acontece:
 * o pacote avisa se o `bbox` cair na divisa entre órbitas — nesse caso
   **mais de uma cena** é baixada para cobrir toda a área solicitada;
 * os dados brutos (DN) são salvos em `wfi2mask_data/raw/<satélite>/<cena>/`;
-* cada cena é convertida para reflectância TOA e salva como GeoTIFF de
-  4 bandas (1=Azul, 2=Verde, 3=Vermelho, 4=NIR) em
+* cada cena é convertida para reflectância TOA, **recortada no bbox** e
+  salva como GeoTIFF de 4 bandas (1=Azul, 2=Verde, 3=Vermelho, 4=NIR) em
   `wfi2mask_data/toa/<satélite>/toa_<cena>.tif`.
 
 ### Data única
 
 ```python
-wfi2mask.get_toa(
+w2m.get_toa(
     date="2025-08-13",   # busca em uma janela de ±15 dias
     bbox=[-46.65, -23.85, -46.45, -23.65],
     product="amazonia1",
@@ -38,58 +38,108 @@ wfi2mask.get_toa(
 Com uma única data, o pacote busca a(s) cena(s) **mais próxima(s)** da data
 pedida dentro de uma janela de ±15 dias.
 
-### Filtro de nuvem (matchup Sentinel-2)
+### Filtro de nuvem
 
-Os metadados WFI **não trazem** percentual de nuvem confiável. O filtro de
-nuvem do `wfi2mask` usa um *matchup* com o Sentinel-2: mantém apenas as
-datas WFI que coincidem (±1 dia) com uma aquisição Sentinel-2 com cobertura
-de nuvem ≤ `max_cloud`.
+O percentual de nuvem do **catálogo INPE** é usado diretamente:
 
 ```python
-wfi2mask.get_toa(
+w2m.get_toa(
     date="2025-06-01, 2025-09-30",
     bbox=[-46.65, -23.85, -46.45, -23.65],
     product="amazonia1",
-    max_cloud=20,      # ativa o matchup (≤ 20 % de nuvem no Sentinel-2)
+    max_cloud=20,      # só cenas com ≤ 20 % de nuvem no catálogo INPE
     max_images=5,      # baixa no máximo 5 cenas (mais recentes primeiro)
     user="seu_email@cadastrado_no_inpe.br",
 )
 ```
 
-`max_cloud=-1` (padrão) desativa o matchup e baixa todas as cenas do
+`max_cloud=-1` (padrão) desativa o filtro e baixa todas as cenas do
 período. `max_images` funciona com ou sem `max_cloud`.
 
-## 2. Gerar a máscara d'água
+```{admonition} O percentual é da cena inteira
+:class: warning
+
+O percentual de nuvem refere-se à **cena WFI completa** (faixa de
+684–866 km). Uma cena "20 % nublada" pode estar totalmente limpa sobre o
+seu `bbox` — e vice-versa. Use valores generosos e confie na composição
+temporal pela regra da maioria para eliminar nuvens residuais.
+```
+
+```{admonition} Matchup Sentinel-2 (experimental)
+:class: note
+
+Uma triagem alternativa por *matchup* de datas com o Sentinel-2 está
+disponível em caráter **experimental** (`s2_matchup=True`, requer
+`max_cloud >= 0`): mantém apenas as datas WFI que coincidem (±1 dia) com
+uma aquisição Sentinel-2 com nuvem ≤ `max_cloud`. Está **em teste/espera**
+— outras opções de mascaramento de nuvem estão sendo consideradas para
+versões futuras.
+```
+
+## 2. (Opcional) Adicionar Sentinel-2
+
+O Sentinel-2 L2A pode ser baixado **sem cadastro** (AWS Open Data) e
+combinado com as cenas WFI:
 
 ```python
-resultado = wfi2mask.get_water_mask(
-    path="./wfi2mask_data/toa",             # pasta com as imagens TOA
-    bbox=[-46.65, -23.85, -46.45, -23.65],  # recorte da análise
-    coarse=100,   # resolução da análise (m)
-    hand=15,      # HAND máximo (m)
-    ndwi=0.0,     # limiar NDWI
-    nir=0.35,     # NIR TOA máximo
+w2m.get_s2(
+    date="2025-07-01, 2025-09-30",
+    bbox=[-46.65, -23.85, -46.45, -23.65],
+    max_cloud=20,      # eo:cloud_cover da cena (padrão 20 %)
+    max_images=10,     # no máximo 10 datas (mais recentes primeiro)
+    outdir="./wfi2mask_data",
+)
+```
+
+Os produtos vão para `wfi2mask_data/toa/sentinel2/toa_S2_<data>.tif`, no
+mesmo layout do `get_toa` — o `get_water_mask` os encontra sozinho. Cada
+produto leva a banda **SCL** (classificação de cena da ESA), usada como
+**máscara de nuvem por pixel** — algo que o WFI não oferece.
+
+## 3. Gerar a máscara d'água
+
+```python
+resultado = w2m.get_water_mask(
+    path="./wfi2mask_data/toa",   # pasta com as imagens TOA (WFI e/ou S2)
+    coarse=100,                    # resolução da análise (m)
+    hand=15,                       # HAND máximo (m)
 )
 ```
 
 O que acontece:
 
-* as imagens TOA são **recortadas no bbox** e reamostradas para a grade de
-  análise (padrão 100 m, compatível com o HAND de ~90 m);
+* o `bbox` **não precisa ser repetido**: as imagens já vêm recortadas do
+  `get_toa`/`get_s2` e sua extensão é usada automaticamente (passe
+  `bbox=` apenas para analisar uma sub-área);
 * os tiles HAND necessários são **baixados sob demanda** e guardados em
   cache (`~/.wfi2mask/hand`);
 * cada cena é classificada e exportada como shapefile com as 4 classes de
   confiança de Namikawa et al. (2016);
-* com 2+ cenas, uma composição temporal pela **regra da maioria (>50 %)**
-  também é exportada;
+* o limiar NIR é escolhido **automaticamente por cena**: 0,35 para WFI
+  (TOA) e 0,10 para Sentinel-2 (reflectância de superfície) — passe
+  `nir=` para fixar um valor único;
+* cenas Sentinel-2 recebem a máscara de nuvem **por pixel** (banda SCL);
+* com 2+ cenas — WFI e Sentinel-2 **juntas** —, uma composição temporal
+  pela **regra da maioria (>50 %)** também é exportada;
 * um plot de demonstração (cor verdadeira + máscara) é salvo em PNG.
+
+### Ajustando a janela de Matiz (Hue)
+
+Os limiares de Matiz são parâmetros — os padrões (16° e 35°) podem ser
+alterados, por exemplo para uma recalibração dos sensores WFI:
+
+```python
+w2m.get_water_mask(path="./wfi2mask_data/toa", hue_min=14, hue_max=38)
+```
+
+As classes de confiança se adaptam automaticamente à janela escolhida.
 
 ### Saídas
 
 ```
 water_mask/
 ├── water_<cena>.shp              # por cena, campo "classe" = 1..4
-├── water_composite_majority.shp  # composição (2+ cenas)
+├── water_composite_majority.shp  # composição (2+ cenas, WFI + S2)
 └── water_mask_overlay.png        # demonstração
 ```
 

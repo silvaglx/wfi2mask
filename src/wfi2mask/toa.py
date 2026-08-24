@@ -21,11 +21,35 @@ from math import cos, pi, radians
 
 import numpy as np
 import rasterio
+from rasterio.windows import Window
+from rasterio.windows import from_bounds as window_from_bounds
 
 from .constants import ACC_OVERRIDE, BAND_NUMBERS, ESUN, satellite_from_scene_id
 from .utils import log, warn
 
 BAND_ORDER = ["blue", "green", "red", "nir"]
+
+
+def resolve_calibration(param, satellite: str) -> dict | None:
+    """Normalize a user-supplied ESUN/ACC override into ``{band: value}``.
+
+    Accepts ``{"blue": v, "green": v, "red": v, "nir": v}`` (applied as-is)
+    or ``{satellite: {band: value}}`` (per-satellite dict). Returns ``None``
+    when the override does not apply to ``satellite``.
+    """
+    if param is None:
+        return None
+    if satellite in param and isinstance(param[satellite], dict):
+        return {b: float(param[satellite][b]) for b in BAND_ORDER}
+    if all(b in param for b in BAND_ORDER):
+        return {b: float(param[b]) for b in BAND_ORDER}
+    if any(k in BAND_NUMBERS for k in param):
+        # per-satellite dict that simply doesn't cover this satellite
+        return None
+    raise ValueError(
+        "Override de calibração inválido: use {'blue':v,'green':v,'red':v,'nir':v} "
+        "ou {'<satelite>': {...}} — recebido: " + repr(param)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -158,11 +182,49 @@ def identify_band_files(scene_dir: str, satellite: str | None) -> dict:
 # Scene conversion
 # ---------------------------------------------------------------------------
 
-def convert_scene_to_toa(scene_dir: str, out_path: str, satellite: str | None = None) -> dict | None:
+def _bbox_window(src, bbox):
+    """Reading window of ``src`` covering ``bbox`` (EPSG:4326), or None.
+
+    Returns (window, transform) clipped to the raster extent; ``None`` when
+    the bbox does not intersect the scene at all.
+    """
+    from rasterio.warp import transform_bounds
+
+    wb = transform_bounds("EPSG:4326", src.crs, *bbox)
+    window = window_from_bounds(*wb, transform=src.transform)
+    try:
+        window = window.intersection(Window(0, 0, src.width, src.height))
+    except Exception:  # rasterio raises when the windows are disjoint
+        return None
+    window = window.round_offsets().round_lengths()
+    if window.width <= 0 or window.height <= 0:
+        return None
+    return window, src.window_transform(window)
+
+
+def convert_scene_to_toa(
+    scene_dir: str,
+    out_path: str,
+    satellite: str | None = None,
+    bbox=None,
+    esun=None,
+    acc=None,
+) -> dict | None:
     """Convert one downloaded scene folder to a 4-band TOA GeoTIFF.
 
     Output band order: 1=Blue, 2=Green, 3=Red, 4=NIR (float32 reflectance).
     Returns a small metadata dict, or None if the scene was skipped.
+
+    Parameters
+    ----------
+    bbox : list, optional
+        ``[lon_min, lat_min, lon_max, lat_max]`` (EPSG:4326). When given, the
+        TOA output is CROPPED to this bbox (scenes without overlap are
+        skipped). Without it, the full scene is converted.
+    esun, acc : dict, optional
+        Calibration overrides: ``{band: value}`` or ``{satellite: {band:
+        value}}``. Defaults come from :mod:`wfi2mask.constants` (``ESUN`` and
+        ``ACC_OVERRIDE``; for CBERS-4, ACC is read from the scene XML).
     """
     scene_name = os.path.basename(os.path.normpath(scene_dir))
     if satellite is None:
@@ -182,23 +244,34 @@ def convert_scene_to_toa(scene_dir: str, out_path: str, satellite: str | None = 
     xmls = sorted(glob.glob(os.path.join(scene_dir, "*.xml")))
     xml_path = xmls[0] if xmls else ""
 
-    # ACC: validated override first, XML fallback (e.g. CBERS-4)
-    if satellite in ACC_OVERRIDE:
-        acc = dict(ACC_OVERRIDE[satellite])
-    else:
-        acc = get_acc_from_xml(xml_path)
+    # ACC: user override > validated override > XML fallback (e.g. CBERS-4)
+    acc = resolve_calibration(acc, satellite)
+    if acc is None:
+        if satellite in ACC_OVERRIDE:
+            acc = dict(ACC_OVERRIDE[satellite])
+        else:
+            acc = get_acc_from_xml(xml_path)
 
     zenith = get_sun_zenith_from_xml(xml_path)
     cos_zenith = cos(radians(zenith))
-    esun = ESUN[satellite]
+    # ESUN: user override > package default
+    esun = resolve_calibration(esun, satellite) or ESUN[satellite]
 
     bands_toa = {}
     profile = None
+    window = None
+    win_transform = None
     for band_name in BAND_ORDER:
         with rasterio.open(band_files[band_name]) as src:
-            dn = src.read(1).astype(np.float32)
             if profile is None:
                 profile = src.profile.copy()
+                if bbox is not None:
+                    clipped = _bbox_window(src, bbox)
+                    if clipped is None:
+                        warn(f"{scene_name}: sem sobreposição com o bbox — pulando.")
+                        return None
+                    window, win_transform = clipped
+            dn = src.read(1, window=window).astype(np.float32)
         radiance = dn * acc[band_name]
         toa = (pi * radiance) / (esun[band_name] * cos_zenith)
         # keep DN==0 (nodata border) as 0
@@ -207,17 +280,26 @@ def convert_scene_to_toa(scene_dir: str, out_path: str, satellite: str | None = 
 
     out_profile = profile.copy()
     out_profile.update(dtype="float32", count=4, compress="lzw", nodata=0.0)
+    if window is not None:
+        out_profile.update(
+            width=int(window.width), height=int(window.height),
+            transform=win_transform,
+        )
+        log(f"  Recorte no bbox: {int(window.width)} x {int(window.height)} px.")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with rasterio.open(out_path, "w", **out_profile) as dst:
         for i, band_name in enumerate(BAND_ORDER, start=1):
             dst.write(bands_toa[band_name], i)
-        dst.update_tags(
+        tags = dict(
             SATELLITE=satellite,
             SCENE_ID=scene_name,
             SUN_ZENITH_DEG=f"{zenith:.4f}",
             BAND_ORDER="blue,green,red,nir",
             PROCESSING="wfi2mask TOA (pi*ACC*DN)/(ESUN*cos(zenith))",
         )
+        if bbox is not None:
+            tags["BBOX"] = ",".join(f"{v:.6f}" for v in bbox)
+        dst.update_tags(**tags)
 
     log(f"  TOA salvo: {out_path} (zênite={zenith:.1f}°)")
     return {"scene": scene_name, "satellite": satellite, "path": out_path,

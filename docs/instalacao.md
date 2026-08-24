@@ -5,18 +5,25 @@
 * Python ≥ 3.9
 * Conta (e-mail) cadastrada no
   [catálogo do INPE](https://www.dgi.inpe.br/catalogo/explore) —
-  necessária para o download das imagens WFI.
+  necessária para o download das imagens WFI (`get_toa`). O Sentinel-2
+  (`get_s2`) não exige cadastro.
 
-## Via pip (GitHub)
+## Via pip (PyPI)
 
 ```bash
-pip install git+https://github.com/SEU_USUARIO/wfi2mask.git
+pip install wfi2mask
+```
+
+## Via pip (GitHub, versão de desenvolvimento)
+
+```bash
+pip install git+https://github.com/silvaglx/wfi2mask.git
 ```
 
 ## Para desenvolvimento
 
 ```bash
-git clone https://github.com/SEU_USUARIO/wfi2mask.git
+git clone https://github.com/silvaglx/wfi2mask.git
 cd wfi2mask
 pip install -e ".[dev]"
 pytest            # rodar os testes
@@ -29,12 +36,13 @@ Instaladas automaticamente pelo pip:
 `numpy`, `rasterio`, `geopandas`, `shapely`, `pyproj`, `matplotlib`,
 `tqdm`, `requests`, `cbers4asat`, `pystac-client`.
 
-!!! tip "Ambientes conda"
-    Em Windows, `rasterio` e `geopandas` instalam com mais facilidade via
-    conda-forge:
+```{admonition} Ambientes conda
+:class: tip
 
-    ```bash
+Em Windows, `rasterio` e `geopandas` instalam com mais facilidade via
+conda-forge:
+
     conda create -n wfi2mask -c conda-forge python=3.11 rasterio geopandas
     conda activate wfi2mask
-    pip install git+https://github.com/SEU_USUARIO/wfi2mask.git
-    ```
+    pip install wfi2mask
+```

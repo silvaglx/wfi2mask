@@ -83,6 +83,71 @@ def test_identify_bands_by_number(tmp_path, sat, bands):
     assert set(files) == {"blue", "green", "red", "nir"}
 
 
+def test_convert_scene_to_toa_bbox_crop(tmp_path):
+    """bbox= must crop the TOA output to the requested area."""
+    from pyproj import Transformer
+
+    scene = tmp_path / "AMAZONIA1_WFI03401920250217ETC2"
+    scene.mkdir()
+    n = 40  # 40x40 px @ 64 m
+    for b in (1, 2, 3, 4):
+        arr = np.full((n, n), 500, dtype="uint16")
+        profile = {
+            "driver": "GTiff", "height": n, "width": n, "count": 1,
+            "dtype": "uint16", "crs": "EPSG:32723",
+            "transform": from_origin(300000, 7400000, 64, 64),
+        }
+        with rasterio.open(str(scene / f"AMAZONIA1_WFI_BAND{b}.tif"), "w", **profile) as dst:
+            dst.write(arr, 1)
+    (scene / "AMAZONIA1_WFI_BAND2.xml").write_text(XML)
+
+    # central 20x20-px core, expressed in EPSG:4326
+    tr = Transformer.from_crs("EPSG:32723", "EPSG:4326", always_xy=True)
+    lon0, lat0 = tr.transform(300000 + 10 * 64, 7400000 - 30 * 64)
+    lon1, lat1 = tr.transform(300000 + 30 * 64, 7400000 - 10 * 64)
+    bbox = [lon0, lat0, lon1, lat1]
+
+    out = str(tmp_path / "toa" / "toa_crop.tif")
+    meta = convert_scene_to_toa(str(scene), out, bbox=bbox)
+    assert meta is not None
+    with rasterio.open(out) as src:
+        # reprojection rounding: allow a small margin around 20x20
+        assert 18 <= src.width <= 24
+        assert 18 <= src.height <= 24
+        assert src.tags().get("BBOX")
+
+    # bbox with no overlap -> scene skipped
+    out2 = str(tmp_path / "toa" / "toa_nooverlap.tif")
+    assert convert_scene_to_toa(str(scene), out2, bbox=[0.0, 0.0, 1.0, 1.0]) is None
+    assert not os.path.exists(out2)
+
+
+def test_convert_scene_to_toa_calibration_override(tmp_path):
+    """esun=/acc= must take precedence over the package defaults."""
+    scene = tmp_path / "AMAZONIA1_WFI03401920250217ETC2"
+    scene.mkdir()
+    dn = 500
+    for b in (1, 2, 3, 4):
+        _write_band(str(scene / f"AMAZONIA1_WFI_BAND{b}.tif"), dn)
+    (scene / "AMAZONIA1_WFI_BAND2.xml").write_text(XML)
+
+    ones = {b: 1.0 for b in ("blue", "green", "red", "nir")}
+    esun = {b: 1000.0 for b in ("blue", "green", "red", "nir")}
+    out = str(tmp_path / "toa" / "toa_override.tif")
+    meta = convert_scene_to_toa(str(scene), out, esun=esun, acc=ones)
+    assert meta is not None
+    with rasterio.open(out) as src:
+        blue = src.read(1)
+    zen = radians(90.0 - 62.5)
+    expected = pi * 1.0 * dn / (1000.0 * cos(zen))
+    assert blue[0, 0] == pytest.approx(expected, rel=1e-5)
+
+    # per-satellite override that does NOT cover this satellite -> defaults
+    out2 = str(tmp_path / "toa" / "toa_other_sat.tif")
+    meta2 = convert_scene_to_toa(str(scene), out2, acc={"cbers4a": ones})
+    assert meta2["acc"] == ACC_OVERRIDE["amazonia1"]
+
+
 def test_convert_scene_to_toa(tmp_path):
     scene = tmp_path / "AMAZONIA1_WFI03401920250217ETC2"
     scene.mkdir()
