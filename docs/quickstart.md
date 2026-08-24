@@ -76,52 +76,54 @@ uma aquisição Sentinel-2 com nuvem ≤ `max_cloud`. Está **em teste/espera**
 versões futuras.
 ```
 
-## 2. (Opcional) Adicionar Sentinel-2
-
-O Sentinel-2 L2A pode ser baixado **sem cadastro** (AWS Open Data) e
-combinado com as cenas WFI:
-
-```python
-w2m.get_s2(
-    date="2025-07-01, 2025-09-30",
-    bbox=[-46.65, -23.85, -46.45, -23.65],
-    max_cloud=20,      # eo:cloud_cover da cena (padrão 20 %)
-    max_images=10,     # no máximo 10 datas (mais recentes primeiro)
-    outdir="./wfi2mask_data",
-)
-```
-
-Os produtos vão para `wfi2mask_data/toa/sentinel2/toa_S2_<data>.tif`, no
-mesmo layout do `get_toa` — o `get_water_mask` os encontra sozinho. Cada
-produto leva a banda **SCL** (classificação de cena da ESA), usada como
-**máscara de nuvem por pixel** — algo que o WFI não oferece.
-
-## 3. Gerar a máscara d'água
+## 2. Gerar a máscara d'água
 
 ```python
 resultado = w2m.get_water_mask(
-    path="./wfi2mask_data/toa",   # pasta com as imagens TOA (WFI e/ou S2)
+    path="./wfi2mask_data/toa",   # pasta com as imagens TOA (WFI)
     coarse=100,                    # resolução da análise (m)
     hand=15,                       # HAND máximo (m)
+    include_s2=True,               # soma Sentinel-2 direto da nuvem (opcional)
 )
 ```
 
 O que acontece:
 
 * o `bbox` **não precisa ser repetido**: as imagens já vêm recortadas do
-  `get_toa`/`get_s2` e sua extensão é usada automaticamente (passe
-  `bbox=` apenas para analisar uma sub-área);
+  `get_toa` e sua extensão é usada automaticamente (passe `bbox=` apenas
+  para analisar uma sub-área);
 * os tiles HAND necessários são **baixados sob demanda** e guardados em
   cache (`~/.wfi2mask/hand`);
 * cada cena é classificada e exportada como shapefile com as 4 classes de
   confiança de Namikawa et al. (2016);
+* com 2+ cenas, uma composição temporal pela **regra da maioria (>50 %)**
+  também é exportada;
+* um plot de demonstração (cor verdadeira + máscara) é salvo em PNG.
+
+### Sentinel-2 direto da nuvem (`include_s2=True`)
+
+Com `include_s2=True`, cenas **Sentinel-2 L2A** são somadas à composição
+**sem baixar nenhum dado**: as imagens são lidas por janelas direto da
+nuvem (AWS Open Data, sem cadastro), já na grade de análise — só os pixels
+do `bbox` trafegam pela rede.
+
+* o **período** é inferido automaticamente das datas das cenas WFI em
+  `path` (ou informe `s2_date="2025-07-01, 2025-09-30"`);
+* `s2_max_cloud=20` filtra pelo `eo:cloud_cover` da cena e, além disso,
+  cada cena recebe a máscara de nuvem **por pixel** (banda SCL da ESA) —
+  algo que o WFI não oferece;
 * o limiar NIR é escolhido **automaticamente por cena**: 0,35 para WFI
   (TOA) e 0,10 para Sentinel-2 (reflectância de superfície) — passe
   `nir=` para fixar um valor único;
-* cenas Sentinel-2 recebem a máscara de nuvem **por pixel** (banda SCL);
-* com 2+ cenas — WFI e Sentinel-2 **juntas** —, uma composição temporal
-  pela **regra da maioria (>50 %)** também é exportada;
-* um plot de demonstração (cor verdadeira + máscara) é salvo em PNG.
+* também funciona **sem cenas WFI** (só Sentinel-2):
+
+```python
+resultado = w2m.get_water_mask(
+    bbox=[-46.65, -23.85, -46.45, -23.65],
+    s2_date="2025-07-01, 2025-09-30",
+    include_s2=True,
+)
+```
 
 ### Ajustando a janela de Matiz (Hue)
 
@@ -138,12 +140,13 @@ As classes de confiança se adaptam automaticamente à janela escolhida.
 
 ```
 water_mask/
-├── water_<cena>.shp              # por cena, campo "classe" = 1..4
+├── water_<cena>.shp              # por cena WFI, campo "classe" = 1..4
+├── water_S2_<data>.shp           # por data Sentinel-2 (include_s2=True)
 ├── water_composite_majority.shp  # composição (2+ cenas, WFI + S2)
 └── water_mask_overlay.png        # demonstração
 ```
 
-| classe | rótulo | Matiz (Hue) | Confiança |
+| classe | label | Matiz (Hue) | Confiança |
 |--------|--------|-------------|-----------|
 | 1 | WATER | 16°–35° (ou NDWI > 0) | máxima |
 | 2 | WATER95 | 35°–36° ∪ 324°–16° | 95 % |

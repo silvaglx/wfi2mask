@@ -45,14 +45,14 @@ w2m.get_toa(
     outdir="./wfi2mask_data",
 )
 
-# 2) (Opcional) Adicionar Sentinel-2 L2A — sem cadastro, com máscara SCL
-w2m.get_s2(date="2025-07-01, 2025-09-30", bbox=BBOX, max_cloud=20)
-
-# 3) Gerar a máscara d'água (WFI + Sentinel-2 na mesma composição)
+# 2) Gerar a máscara d'água; include_s2=True soma cenas Sentinel-2 L2A
+#    processadas DIRETO DA NUVEM (sem download, sem cadastro, com máscara
+#    de nuvem SCL por pixel) à mesma composição
 resultado = w2m.get_water_mask(
     path="./wfi2mask_data/toa",
     coarse=100,   # resolução de análise (m), compatível com o HAND (~90 m)
     hand=15,      # HAND máximo (m)
+    include_s2=True,
 )
 ```
 

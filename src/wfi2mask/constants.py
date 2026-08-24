@@ -23,7 +23,7 @@ SCENE_PREFIXES = {
     "CBERS_4A_WFI": "cbers4a",
     "AMAZONIA1_WFI": "amazonia1",
     "AMAZONIA_1_WFI": "amazonia1",
-    # Sentinel-2 (produtos de get_s2 e cenas nomeadas pelo padrao ESA)
+    # Sentinel-2 (cenas locais nomeadas pelo padrao ESA ou "S2_<data>")
     "S2A": "sentinel2",
     "S2B": "sentinel2",
     "S2C": "sentinel2",
@@ -124,16 +124,16 @@ HAND_RELEASE_BASE_URL = (
 
 # ---------------------------------------------------------------------------
 # Sentinel-2 (Earth Search STAC on AWS)
-# Used by get_s2 (download of L2A scenes for get_water_mask) and by the
-# EXPERIMENTAL date-level cloud matchup of get_toa (s2_matchup=True).
+# Used by get_water_mask(include_s2=True) — L2A scenes streamed directly
+# from the cloud, no download — and by the EXPERIMENTAL date-level cloud
+# matchup of get_toa (s2_matchup=True).
 # ---------------------------------------------------------------------------
 S2_STAC_URL = "https://earth-search.aws.element84.com/v1"
 S2_COLLECTION = "sentinel-2-l2a"
 S2_MATCHUP_TOLERANCE_DAYS = 1
-# Sentinel-2 L2A reflectance comes multiplied by 10000; get_s2 divides by
-# this factor so every product consumed by get_water_mask is in [0, ~1].
+# Sentinel-2 L2A reflectance comes multiplied by 10000; the streaming
+# divides by this factor so everything is in the same [0, ~1] scale.
 S2_SCALE = 10000.0
 # SCL (Scene Classification Layer) codes treated as invalid observations:
 # 0 = no data, 8 = cloud medium prob., 9 = cloud high prob., 10 = cirrus
 S2_SCL_INVALID = (0, 8, 9, 10)
-DEFAULT_S2_RESOLUTION = 10.0  # metres (native for the 10 m bands)

@@ -6,7 +6,7 @@
 * Conta (e-mail) cadastrada no
   [catálogo do INPE](https://www.dgi.inpe.br/catalogo/explore) —
   necessária para o download das imagens WFI (`get_toa`). O Sentinel-2
-  (`get_s2`) não exige cadastro.
+  (`include_s2=True` em `get_water_mask`) não exige cadastro.
 
 ## Via pip (PyPI)
 

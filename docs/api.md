@@ -35,8 +35,7 @@ outdir/
 │   └── cbers4a/...
 └── toa/
     ├── amazonia1/toa_<cena>.tif   # 4 bandas float32 (B,G,R,NIR), recorte no bbox
-    ├── ...
-    └── sentinel2/toa_S2_<data>.tif  # produtos de get_s2 (5 bandas, com SCL)
+    └── ...
 ```
 
 ```{admonition} Conversão TOA
@@ -85,36 +84,6 @@ de mascaramento de nuvem estão em avaliação para versões futuras.
 
 ---
 
-## `wfi2mask.get_s2`
-
-```python
-w2m.get_s2(
-    date=None,          # "AAAA-MM-DD" ou "AAAA-MM-DD, AAAA-MM-DD"
-    bbox=None,          # [lon_min, lat_min, lon_max, lat_max] (EPSG:4326)
-    max_cloud=20,       # eo:cloud_cover máximo da cena (%); -1 desativa
-    max_images=None,    # limite de DATAS (mais recentes primeiro)
-    outdir="./wfi2mask_data",
-    resolution=10,      # resolução de saída (m)
-)
-```
-
-Contrapartida Sentinel-2 do `get_toa` (que continua exclusivo WFI/INPE):
-busca cenas **Sentinel-2 L2A** no Earth Search STAC (AWS Open Data, sem
-cadastro), recorta no bbox, faz o mosaico por data e salva em
-`outdir/toa/sentinel2/toa_S2_<data>.tif` — no mesmo layout do `get_toa`,
-para que `get_water_mask` as encontre automaticamente (sozinhas ou junto
-com as cenas WFI).
-
-Cada produto tem **5 bandas float32**: 1=Azul, 2=Verde, 3=Vermelho, 4=NIR
-(reflectância de superfície já dividida por 10 000, ou seja em `[0, ~1]`,
-mesma convenção do TOA WFI) e 5=**SCL** (Scene Classification Layer da
-ESA), usada pelo `get_water_mask` como máscara de nuvem por pixel.
-
-**Retorno:** lista de dicionários —
-`{"scene", "satellite", "path", "date", "n_items"}`.
-
----
-
 ## `wfi2mask.get_water_mask`
 
 ```python
@@ -129,16 +98,37 @@ w2m.get_water_mask(
     hand_dir=None,  # pasta local com tiles HAND (opcional, ver nota)
     outdir=None,    # padrão: <path>/../water_mask
     plot=True,      # salvar o plot de demonstração
+    include_s2=False,     # soma Sentinel-2 L2A processado direto da nuvem
+    s2_date=None,         # período S2; padrão = datas das cenas WFI em path
+    s2_max_cloud=20,      # eo:cloud_cover máximo da cena S2 (%); -1 desativa
+    s2_max_images=None,   # limite de DATAS S2 (mais recentes primeiro)
 )
 ```
 
-Classifica as imagens TOA — WFI (`get_toa`) e/ou Sentinel-2 (`get_s2`) —
-e exporta shapefiles com as 4 classes de confiança + composição temporal
-pela regra da maioria (quando há 2+ cenas, **misturando os satélites**).
+Classifica as imagens TOA locais (saída de `get_toa`) e exporta shapefiles
+com as 4 classes de confiança + composição temporal pela regra da maioria
+(quando há 2+ cenas).
 
 **Retorno:** `{"scenes": [...], "composite": str|None, "plot": str|None,
 "outdir": str}`. Cada item de `scenes` traz `scene`, `satellite`,
 `nir_max`, `shapefile`, `n_polygons` e `n_water_px`.
+
+### Sentinel-2 direto da nuvem (`include_s2=True`)
+
+Com `include_s2=True`, cenas **Sentinel-2 L2A** são somadas à análise
+**sem baixar nenhum dado**: a busca é feita no Earth Search STAC (AWS Open
+Data, sem cadastro) e as bandas (blue/green/red/nir + **SCL**) são lidas
+por janelas direto da nuvem, já na grade de análise — só os pixels do
+`bbox`, na resolução `coarse`, trafegam pela rede. A reflectância é
+convertida para a mesma escala `[0, ~1]` do TOA WFI, a banda SCL é
+aplicada como **máscara de nuvem por pixel**, e cada data vira um
+shapefile `water_S2_<data>.shp` que entra na composição junto com as
+cenas WFI.
+
+O período da busca vem de `s2_date` (mesmos formatos do `date` de
+`get_toa`) ou, por padrão, do intervalo de datas das cenas WFI em `path`.
+Uma execução **somente Sentinel-2** também é possível: omita `path` e
+informe `bbox` e `s2_date`.
 
 ```{admonition} Limiar NIR automático
 :class: note
@@ -153,9 +143,13 @@ limiar em todas as cenas.
 ```{admonition} hand_dir raramente é necessário
 :class: tip
 
-Os tiles HAND são baixados automaticamente do GitHub Release do projeto e
-guardados em cache (`~/.wfi2mask/hand`). Use `hand_dir=` apenas para
-trabalhar offline ou com tiles próprios.
+O filtro topográfico usa tiles HAND de 5°×5° derivados do MERIT Hydro
+(Yamazaki et al., 2019). Os tiles que o `bbox` necessita são baixados
+automaticamente do GitHub Release do projeto e guardados em cache
+(`~/.wfi2mask/hand`) — nenhuma configuração é necessária. Use `hand_dir=`
+apenas para trabalhar offline ou com tiles próprios; as variáveis de
+ambiente `WFI2MASK_HAND_URL` e `WFI2MASK_CACHE` permitem trocar a URL
+base e a pasta de cache.
 ```
 
 ---

@@ -52,7 +52,7 @@ def _make_toa(path, lake=True, seed=42):
 
 
 def _make_s2_toa(path, cloudy=False, seed=7):
-    """Synthetic 5-band Sentinel-2 product (get_s2 layout): B,G,R,NIR + SCL.
+    """Synthetic local 5-band Sentinel-2 product: B,G,R,NIR + SCL.
 
     Reflectance already in [0, ~1]; SCL 6 = water, 4 = vegetation,
     9 = cloud high probability (invalid).
@@ -130,6 +130,18 @@ def test_validate_bbox_errors():
 def test_get_water_mask_invalid_path():
     with pytest.raises(FileNotFoundError, match="path"):
         get_water_mask(path=None, bbox=BBOX)
+
+
+def test_infer_dates_from_scenes():
+    from datetime import date
+
+    from wfi2mask.mask import _infer_dates_from_scenes
+
+    d = _infer_dates_from_scenes(
+        ["toa_AMAZONIA1_WFI03401920250217ETC2.tif", "toa_S2_20250101.tif"]
+    )
+    assert d == (date(2025, 1, 1), date(2025, 2, 17))
+    assert _infer_dates_from_scenes(["toa_SEM_DATA.tif"]) is None
 
 
 def test_get_water_mask_synthetic(tmp_path):

@@ -18,7 +18,7 @@ B5=NIR) usados no artigo original — **não** dos canais RGB.
 
 ### Classes de confiança (Namikawa et al., 2016)
 
-| classe | rótulo | Matiz | confiança |
+| classe | label | Matiz | confiança |
 |--------|--------|-------|-----------|
 | 1 | WATER | 16°–35° | máxima |
 | 2 | WATER95 | 35°–36° ∪ 324°–360° ∪ 0°–16° | 95 % |
@@ -37,7 +37,8 @@ eutrofizadas ou pretas que falham no teste de Matiz.
 ### HAND — filtro topográfico
 
 Remove falsos positivos em terreno elevado (sombras de relevo, áreas urbanas
-escuras). Ver [Dados HAND](hand.md).
+escuras). Usa tiles de 5°×5° do MERIT Hydro (Yamazaki et al., 2019),
+baixados automaticamente sob demanda e mantidos em cache local.
 
 ### Filtro de brilho NIR
 
@@ -82,7 +83,8 @@ máscara SCL, agregação simétrica):
 * **Sem máscara de nuvem por pixel no WFI** — a triagem usa o percentual
   de nuvem do catálogo INPE, que se refere à cena inteira (684–866 km) e
   pode não representar o bbox; a composição pela maioria mitiga nuvens
-  residuais. Cenas Sentinel-2 (via `get_s2`) têm máscara por pixel (SCL).
+  residuais. Cenas Sentinel-2 (via `include_s2=True`) têm máscara por
+  pixel (SCL).
   Um matchup de datas com o Sentinel-2 existe em caráter experimental
   (`s2_matchup=True`) e outras opções estão em avaliação.
 * **Transferência de limiares** — a janela de Matiz [16°, 35°) foi

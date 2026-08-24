@@ -17,28 +17,21 @@ Uso básico::
         user="seu_email@cadastrado_no_inpe.br",
     )
 
-    # opcional: Sentinel-2 L2A (sem cadastro) para compor com o WFI
-    w2m.get_s2(
-        date="2025-07-01, 2025-09-30",
-        bbox=[-46.65, -23.85, -46.45, -23.65],
-    )
-
-    # máscara d'água (WFI + Sentinel-2 juntos na composição)
-    w2m.get_water_mask(path="./wfi2mask_data/toa")
+    # máscara d'água; include_s2=True soma cenas Sentinel-2 processadas
+    # direto da nuvem (sem download) à composição
+    w2m.get_water_mask(path="./wfi2mask_data/toa", include_s2=True)
 """
 
 from .algorithm import classify_scene, majority_composite, norm_scene, rgb_to_hsv_hue
 from .download import get_toa
 from .hand import get_hand_tiles, tiles_for_bbox
 from .mask import get_water_mask
-from .sentinel2 import get_s2
 from .toa import convert_scene_to_toa
 
 __version__ = "0.2.0"
 
 __all__ = [
     "get_toa",
-    "get_s2",
     "get_water_mask",
     "convert_scene_to_toa",
     "classify_scene",

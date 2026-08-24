@@ -19,20 +19,15 @@ w2m.get_toa(
     outdir="./wfi2mask_data",
 )
 
-# 2) (Opcional) Adicionar Sentinel-2 L2A à composição ------------------
-w2m.get_s2(
-    date="2025-07-01, 2025-09-30",
-    bbox=BBOX,
-    max_cloud=20,
-    max_images=5,
-    outdir="./wfi2mask_data",
-)
-
-# 3) Gerar a máscara d'água (WFI + Sentinel-2 juntos) ------------------
+# 2) Gerar a máscara d'água (WFI + Sentinel-2 juntos) ------------------
+# include_s2=True soma cenas Sentinel-2 L2A processadas direto da nuvem
+# (sem download; período inferido das cenas WFI; máscara SCL por pixel).
 resultado = w2m.get_water_mask(
     path="./wfi2mask_data/toa",
     coarse=100,
     hand=15,
+    include_s2=True,
+    # s2_date="2025-07-01, 2025-09-30",  # opcional: período explícito
     # nir=None (padrão): limiar automático por cena (0.35 WFI / 0.10 S2)
     # hue_min=16, hue_max=35: janela de Matiz ajustável
 )

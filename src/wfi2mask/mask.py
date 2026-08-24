@@ -3,21 +3,22 @@
 Steps
 -----
 1. Locate valid TOA GeoTIFFs (``toa_*.tif``) under ``path`` (recursively,
-   so ``outdir/toa`` with per-satellite subfolders works directly). Both
-   WFI products (get_toa) and Sentinel-2 products (get_s2) are accepted
-   and can be MIXED into a single composite.
+   so ``outdir/toa`` with per-satellite subfolders works directly).
 2. Build a common analysis grid: UTM zone of the bbox centre, at the
    ``coarse`` resolution (default 100 m — matches the ~90 m HAND data).
    The bbox defaults to the extent of the TOA images themselves (which
-   get_toa/get_s2 already crop to the requested area).
+   get_toa already crops to the requested area).
 3. Download (on demand) and warp the HAND tiles for the bbox.
 4. Classify each scene (Namikawa Hue + NDWI + HAND + NIR filters) into the
    4 Namikawa et al. (2016) confidence classes and export one shapefile
-   per scene. Sentinel-2 scenes additionally get a PER-PIXEL cloud mask
-   from their SCL band, and their own NIR threshold default.
-5. With 2+ scenes, aggregate with the >50 % majority rule and export a
-   composite shapefile.
-6. Save a demonstration plot (true color + mask overlay).
+   per scene.
+5. With ``include_s2=True``, stream Sentinel-2 L2A scenes DIRECTLY FROM
+   THE CLOUD (no download) onto the same grid and classify them too —
+   with a PER-PIXEL cloud mask from the SCL band and their own NIR
+   threshold default.
+6. With 2+ scenes (WFI and Sentinel-2 mixed), aggregate with the >50 %
+   majority rule and export a composite shapefile.
+7. Save a demonstration plot (true color + mask overlay).
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ from .constants import (
 )
 from .hand import load_hand_on_grid
 from .plotting import plot_overlay, stretch
-from .utils import log, validate_bbox, warn
+from .utils import log, parse_dates, validate_bbox, warn
 
 
 def _bbox_from_files(toa_files) -> list:
@@ -126,6 +127,100 @@ def _vectorize(class_array: np.ndarray, transform, crs, out_shp: str) -> int:
     return len(gdf)
 
 
+def _infer_dates_from_scenes(scene_names):
+    """Date range (min, max) parsed from scene ids (YYYYMMDD), or None.
+
+    INPE scene ids (e.g. ``AMAZONIA1_WFI03401920250217...``) embed the
+    acquisition date; this is used as the default Sentinel-2 search window.
+    """
+    import re
+    from datetime import datetime
+
+    found = []
+    for name in scene_names:
+        for m in re.findall(r"20\d{6}", name):
+            try:
+                d = datetime.strptime(m, "%Y%m%d").date()
+            except ValueError:
+                continue
+            if 2000 <= d.year <= 2100:
+                found.append(d)
+                break
+    if not found:
+        return None
+    return min(found), max(found)
+
+
+def _classify_s2_from_cloud(bbox, s2_date, s2_max_cloud, s2_max_images,
+                            toa_files, crs, transform, shape, hand_grid,
+                            hue_min, hue_max, ndwi, hand, nir, register):
+    """Search, stream and classify Sentinel-2 L2A scenes — no download.
+
+    Failures are non-fatal: the run continues with the local scenes only.
+    ``register`` is the per-scene callback of get_water_mask.
+    """
+    from datetime import timedelta
+
+    try:
+        from .sentinel2 import search_s2_dates, stream_s2_scene
+
+        if s2_date is not None:
+            d0, d1 = parse_dates(s2_date)
+        else:
+            inferred = _infer_dates_from_scenes(
+                [os.path.basename(f) for f in toa_files]
+            )
+            if inferred is None:
+                warn("include_s2=True: não foi possível inferir o período a "
+                     "partir das cenas locais — informe s2_date=. "
+                     "Sentinel-2 ignorado.")
+                return
+            d0, d1 = inferred
+            log(f"Sentinel-2: período inferido das cenas WFI: {d0} a {d1}.")
+        if d0 == d1:
+            d0, d1 = d0 - timedelta(days=15), d1 + timedelta(days=15)
+            log(f"Sentinel-2: data única — janela expandida para {d0} a {d1}.")
+
+        log(f"Sentinel-2: buscando cenas L2A na nuvem "
+            f"(eo:cloud_cover <= {s2_max_cloud}%)...")
+        dates_items = search_s2_dates(bbox, d0, d1, s2_max_cloud, s2_max_images)
+    except ImportError:
+        warn("pystac-client não instalado — Sentinel-2 ignorado "
+             "(pip install pystac-client).")
+        return
+    except Exception as exc:  # noqa: BLE001
+        warn(f"Busca Sentinel-2 falhou ({exc}) — prosseguindo sem Sentinel-2.")
+        return
+
+    if not dates_items:
+        warn("Nenhuma cena Sentinel-2 atende aos critérios no período.")
+        return
+    log(f"  {len(dates_items)} data(s) Sentinel-2 serão processadas "
+        f"direto da nuvem (sem download).")
+
+    try:
+        from tqdm import tqdm
+        iterator = tqdm(dates_items.items(), desc="sentinel-2 (nuvem)",
+                        unit="data", total=len(dates_items))
+    except ImportError:
+        iterator = dates_items.items()
+
+    nir_max_scene = float(nir) if nir is not None else DEFAULT_NIR_MAX_S2
+    for d, items in iterator:
+        bands = stream_s2_scene(items, crs, transform, shape)
+        if bands is None:
+            warn(f"  S2 {d}: leitura na nuvem falhou — pulando.")
+            continue
+        res = classify_scene(
+            bands["green"], bands["red"], bands["nir"], hand=hand_grid,
+            hue_min=hue_min, hue_max=hue_max,
+            ndwi_threshold=ndwi, hand_max=hand, nir_max=nir_max_scene,
+        )
+        register(f"S2_{d.strftime('%Y%m%d')}", "sentinel2", nir_max_scene,
+                 res, bands["red"], bands["green"], bands["blue"],
+                 scl_grid=bands["scl"])
+
+
 def get_water_mask(
     path=None,
     bbox=None,
@@ -138,25 +233,33 @@ def get_water_mask(
     hand_dir=None,
     outdir=None,
     plot=True,
+    include_s2=False,
+    s2_date=None,
+    s2_max_cloud=20,
+    s2_max_images=None,
 ):
-    """Generate water-mask shapefiles from a folder of TOA images.
+    """Generate water-mask shapefiles from WFI TOA images and/or Sentinel-2.
 
-    Accepts WFI products (:func:`wfi2mask.get_toa`) and Sentinel-2 products
-    (:func:`wfi2mask.get_s2`), including both together — every scene lands
-    on the same analysis grid, so the majority composite can combine WFI
+    WFI products come from a local folder (output of
+    :func:`wfi2mask.get_toa`). Sentinel-2 L2A is processed DIRECTLY FROM THE
+    CLOUD (``include_s2=True``): the scenes are searched on the Earth Search
+    STAC (AWS Open Data, no credentials) and their bands are read windowed
+    straight onto the analysis grid — nothing is downloaded to disk. Every
+    scene lands on the same grid, so the majority composite can combine WFI
     and Sentinel-2 observations in one water-mask product.
 
     Parameters
     ----------
-    path : str
+    path : str, optional
         Directory containing valid TOA images (``toa_*.tif``, output of
-        :func:`wfi2mask.get_toa` and/or :func:`wfi2mask.get_s2`). Searched
-        recursively.
+        :func:`wfi2mask.get_toa`). Searched recursively. Optional when
+        ``include_s2=True`` (Sentinel-2-only run: pass ``bbox`` and
+        ``s2_date`` instead).
     bbox : list, optional
-        ``[lon_min, lat_min, lon_max, lat_max]``. Since get_toa/get_s2
-        already crop to the requested bbox, this is now OPTIONAL — when
-        omitted, the extent of the TOA images themselves is used. Pass it
-        only to analyse a sub-area of the images.
+        ``[lon_min, lat_min, lon_max, lat_max]``. Since get_toa already
+        crops to the requested bbox, this is OPTIONAL when ``path`` has
+        images — the extent of the images themselves is used. Required for
+        a Sentinel-2-only run.
     coarse : float
         Analysis resolution in metres (default 100, matching the ~90 m HAND
         data). Bands are aggregated (average) onto this grid.
@@ -179,9 +282,26 @@ def get_water_mask(
         downloaded on demand from the project's GitHub Release and cached
         in ``~/.wfi2mask/hand``. Useful offline or with custom tiles.
     outdir : str, optional
-        Output folder. Default: ``<path>/../water_mask``.
+        Output folder. Default: ``<path>/../water_mask`` (or
+        ``./water_mask`` when ``path`` is not given).
     plot : bool
         Save the demonstration plot (true color + overlay). Default True.
+    include_s2 : bool
+        Default False. When True, Sentinel-2 L2A scenes over the bbox are
+        streamed from the cloud and classified alongside the WFI scenes
+        (per-pixel SCL cloud mask included) — no data is written to disk.
+    s2_date : str | tuple, optional
+        Sentinel-2 search period (same formats as ``get_toa``'s ``date``).
+        Default: the date range of the WFI scenes found in ``path``
+        (inferred from the scene ids); a single date is expanded to a
+        +/-15-day window. Required when there are no WFI scenes to infer
+        from.
+    s2_max_cloud : float
+        Scene-level ``eo:cloud_cover`` filter for the Sentinel-2 search
+        (default 20 %; -1 disables). The per-pixel SCL mask is applied
+        regardless.
+    s2_max_images : int, optional
+        Cap on the number of Sentinel-2 DATES used, most recent first.
 
     Returns
     -------
@@ -191,20 +311,29 @@ def get_water_mask(
     # ------------------------------------------------------------------ #
     # Input validation                                                    #
     # ------------------------------------------------------------------ #
-    if not path or not os.path.isdir(str(path)):
-        raise FileNotFoundError(
-            "Imagens não encontradas: informe em path= um diretório válido com "
-            "imagens TOA (saída de wfi2mask.get_toa / get_s2, arquivos 'toa_*.tif')."
+    toa_files = []
+    if path:
+        if not os.path.isdir(str(path)):
+            raise FileNotFoundError(
+                f"path= não é um diretório válido: {path}"
+            )
+        toa_files = sorted(
+            glob.glob(os.path.join(path, "**", "toa_*.tif"), recursive=True)
         )
 
-    toa_files = sorted(glob.glob(os.path.join(path, "**", "toa_*.tif"), recursive=True))
-    if not toa_files:
+    if not toa_files and not include_s2:
         raise FileNotFoundError(
-            f"Nenhum arquivo 'toa_*.tif' encontrado em {os.path.abspath(path)}. "
-            "Execute wfi2mask.get_toa (ou get_s2) primeiro ou verifique o caminho."
+            "Nenhuma imagem TOA encontrada: informe em path= um diretório com "
+            "arquivos 'toa_*.tif' (saída de wfi2mask.get_toa) e/ou use "
+            "include_s2=True para processar Sentinel-2 direto da nuvem."
         )
 
     if bbox is None:
+        if not toa_files:
+            raise ValueError(
+                "bbox é obrigatório quando não há imagens TOA locais "
+                "(execução somente Sentinel-2)."
+            )
         bbox = _bbox_from_files(toa_files)
         log(f"bbox não informado — usando a extensão das imagens TOA: "
             f"[{', '.join(f'{v:.4f}' for v in bbox)}]")
@@ -212,14 +341,18 @@ def get_water_mask(
         bbox = validate_bbox(bbox)
 
     if outdir is None:
-        outdir = os.path.join(os.path.dirname(os.path.abspath(path)), "water_mask")
+        outdir = (os.path.join(os.path.dirname(os.path.abspath(path)), "water_mask")
+                  if path else "./water_mask")
     os.makedirs(outdir, exist_ok=True)
 
     nir_desc = (f"{nir}" if nir is not None
                 else f"auto ({DEFAULT_NIR_MAX} WFI / {DEFAULT_NIR_MAX_S2} S2)")
     log("=" * 62)
     log("wfi2mask.get_water_mask")
-    log(f"  {len(toa_files)} imagem(ns) TOA em {os.path.abspath(path)}")
+    if toa_files:
+        log(f"  {len(toa_files)} imagem(ns) TOA em {os.path.abspath(path)}")
+    if include_s2:
+        log("  Sentinel-2: processamento direto da nuvem (sem download)")
     log(f"  bbox:      {bbox}")
     log(f"  grade:     {coarse:.0f} m (recorte no bbox + reamostragem)")
     log(f"  filtros:   HAND<={hand} m | NDWI>{ndwi} | NIR<{nir_desc} | Hue [{hue_min},{hue_max})")
@@ -242,17 +375,45 @@ def get_water_mask(
     # ------------------------------------------------------------------ #
     try:
         from tqdm import tqdm
-        iterator = tqdm(toa_files, desc="classificando cenas", unit="cena")
     except ImportError:
-        iterator = toa_files
+        tqdm = None
+    iterator = (tqdm(toa_files, desc="classificando cenas", unit="cena")
+                if tqdm and toa_files else toa_files)
 
-    n = len(toa_files)
-    water_stack = np.zeros((n, *shape), dtype=bool)
-    valid_stack = np.zeros((n, *shape), dtype=bool)
-    tc_stack = {b: np.zeros((n, *shape), dtype=np.float32) for b in ("red", "green", "blue")}
+    water_list = []
+    valid_list = []
+    tc_list = {b: [] for b in ("red", "green", "blue")}
     scene_results = []
 
-    for idx, toa_path in enumerate(iterator):
+    def _register_scene(scene_name, satellite, nir_max_scene, res,
+                        red, green, blue, scl_grid=None):
+        """Apply the optional SCL mask, vectorize and store one scene."""
+        if scl_grid is not None:
+            # Sentinel-2 per-pixel cloud mask: drop clouds/cirrus/nodata
+            scl_ok = ~np.isin(scl_grid.astype(np.int16), S2_SCL_INVALID)
+            res["confidence"][~scl_ok] = 0
+            res["water"] &= scl_ok
+            res["valid"] &= scl_ok
+        water_list.append(res["water"])
+        valid_list.append(res["valid"])
+        tc_list["red"].append(red)
+        tc_list["green"].append(green)
+        tc_list["blue"].append(blue)
+        shp_path = os.path.join(outdir, f"water_{scene_name}.shp")
+        n_polys = _vectorize(res["confidence"], transform, crs, shp_path)
+        scene_results.append(
+            {
+                "scene": scene_name,
+                "satellite": satellite,
+                "nir_max": nir_max_scene,
+                "shapefile": shp_path,
+                "n_polygons": n_polys,
+                "n_water_px": int(res["water"].sum()),
+                "confidence": res["confidence"],
+            }
+        )
+
+    for toa_path in iterator:
         scene_name = os.path.basename(toa_path).replace("toa_", "").replace(".tif", "")
         scl = None
         with rasterio.open(toa_path) as src:
@@ -269,7 +430,7 @@ def get_water_mask(
                 warn(f"{scene_name}: menos de 4 bandas — pulando.")
                 continue
 
-            # satellite: GeoTIFF tag (get_toa/get_s2 products) or scene name
+            # satellite: GeoTIFF tag (get_toa products) or scene name
             satellite = (
                 src.tags().get("SATELLITE")
                 or satellite_from_scene_id(scene_name)
@@ -286,8 +447,8 @@ def get_water_mask(
                 scl = _warp_band(src, 5, shape, transform, crs,
                                  resampling=Resampling.mode)
 
-        # Sentinel-2 delivered on the raw x10000 scale (file not produced
-        # by get_s2): bring it to the common [0, ~1] reflectance scale.
+        # Local Sentinel-2 file on the raw x10000 scale: bring it to the
+        # common [0, ~1] reflectance scale.
         if is_s2 and float(np.nanmax(green)) > 10.0:
             log(f"  {scene_name}: reflectância na escala x{S2_SCALE:.0f} — normalizando.")
             blue, green, red, nir_b = (a / S2_SCALE for a in (blue, green, red, nir_b))
@@ -303,36 +464,23 @@ def get_water_mask(
             ndwi_threshold=ndwi, hand_max=hand, nir_max=nir_max_scene,
         )
 
-        # Sentinel-2 per-pixel cloud mask (SCL): drop clouds/cirrus/nodata
-        if scl is not None:
-            scl_ok = ~np.isin(scl.astype(np.int16), S2_SCL_INVALID)
-            res["confidence"][~scl_ok] = 0
-            res["water"] &= scl_ok
-            res["valid"] &= scl_ok
+        _register_scene(scene_name, satellite, nir_max_scene, res,
+                        red, green, blue, scl_grid=scl)
 
-        water_stack[idx] = res["water"]
-        valid_stack[idx] = res["valid"]
-        tc_stack["red"][idx] = red
-        tc_stack["green"][idx] = green
-        tc_stack["blue"][idx] = blue
-
-        shp_path = os.path.join(outdir, f"water_{scene_name}.shp")
-        n_polys = _vectorize(res["confidence"], transform, crs, shp_path)
-        scene_results.append(
-            {
-                "scene": scene_name,
-                "satellite": satellite,
-                "nir_max": nir_max_scene,
-                "shapefile": shp_path,
-                "n_polygons": n_polys,
-                "n_water_px": int(res["water"].sum()),
-                "confidence": res["confidence"],
-            }
+    # ------------------------------------------------------------------ #
+    # Sentinel-2 streamed from the cloud (include_s2=True)                #
+    # ------------------------------------------------------------------ #
+    if include_s2:
+        _classify_s2_from_cloud(
+            bbox, s2_date, s2_max_cloud, s2_max_images,
+            toa_files, crs, transform, shape, hand_grid,
+            hue_min, hue_max, ndwi, hand, nir, _register_scene,
         )
 
     if not scene_results:
         raise RuntimeError(
-            "Nenhuma cena pôde ser classificada (sem sobreposição com o bbox?)."
+            "Nenhuma cena pôde ser classificada (sem sobreposição com o "
+            "bbox, ou nenhuma cena Sentinel-2 no período?)."
         )
     for r in scene_results:
         log(f"  {r['scene']} ({r['satellite']}, NIR<{r['nir_max']}): "
@@ -344,7 +492,7 @@ def get_water_mask(
     composite_shp = None
     composite_conf = None
     if len(scene_results) >= 2:
-        agg = majority_composite(water_stack, valid_stack)
+        agg = majority_composite(np.stack(water_list), np.stack(valid_list))
         log(f"Composição por regra da maioria (>50 %, min {agg['min_obs']} observações):")
         n_water_final = int((agg["mask"] == 1).sum())
         n_reliable = int((agg["mask"] != 255).sum())
@@ -367,8 +515,9 @@ def get_water_mask(
                 return np.nan_to_num(np.nanmedian(masked, axis=0))
 
         true_color = np.stack(
-            [stretch(med(tc_stack["red"])), stretch(med(tc_stack["green"])),
-             stretch(med(tc_stack["blue"]))], axis=-1,
+            [stretch(med(np.stack(tc_list["red"]))),
+             stretch(med(np.stack(tc_list["green"]))),
+             stretch(med(np.stack(tc_list["blue"])))], axis=-1,
         )
         conf_for_plot = (
             composite_conf if composite_conf is not None
