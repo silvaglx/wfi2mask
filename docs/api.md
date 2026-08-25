@@ -40,14 +40,12 @@ outdir/
 
 `ρ_TOA = (π × ACC × DN) / (ESUN × cos θ_sol)`
 
-* **ACC** — coeficientes validados via RadCalNet para CBERS-4A e
-  Amazonia-1 (`wfi2mask.constants.ACC_OVERRIDE`); para o **CBERS-4** não
-  há valores validados, então o ACC é lido do XML de cada cena.
-* **ESUN** — irradiância solar exoatmosférica por banda e satélite
+* **ACC** — coeficientes corrigidos via RadCalNet para CBERS-4A e
+  Amazonia-1 (`wfi2mask.constants.ACC_OVERRIDE`); **CBERS-4** ainda
+  sendo ajustado.
+* **ESUN** — irradiância solar por banda e satélite
   (`wfi2mask.constants.ESUN`).
 * **θ_sol** — zênite solar (90° − elevação solar do XML).
-* Limitação: a correção de distância Terra–Sol (d²) não é aplicada
-  (erro sazonal de ±3,3 %).
 ```
 
 ### Personalizando ESUN e ACC
