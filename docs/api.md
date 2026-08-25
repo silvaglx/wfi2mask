@@ -9,11 +9,11 @@ w2m.get_toa(
     date=None,          # "AAAA-MM-DD" ou "AAAA-MM-DD, AAAA-MM-DD"
     bbox=None,          # [lon_min, lat_min, lon_max, lat_max] (EPSG:4326)
     product="all",      # 'amazonia1' | 'cbers4a' | 'cbers4' | 'all' | lista
-    max_cloud=-1,       # -1 desativa; >=0 filtra pelo % de nuvem do INPE
+    max_cloud=-1,       # -1 desativa; >=0 filtra pelo % de nuvem do
     max_images=None,    # limite de cenas por satélite (mais recentes primeiro)
-    user=None,          # e-mail cadastrado no catálogo do INPE (obrigatório)
+    user=None,          # e-mail cadastrado no catálogo
     outdir="./wfi2mask_data",
-    s2_matchup=False,   # EXPERIMENTAL: triagem por matchup com Sentinel-2
+    s2_matchup=False,   # matchup com Sentinel-2
     esun=None,          # override dos valores ESUN (ver abaixo)
     acc=None,           # override dos coeficientes ACC (ver abaixo)
 )
@@ -21,9 +21,6 @@ w2m.get_toa(
 
 Busca no catálogo do INPE, baixa as bandas Azul/Verde/Vermelho/NIR + XML e
 converte para reflectância TOA **já recortada no bbox**.
-
-**Retorno:** lista de dicionários, um por cena convertida —
-`{"scene", "satellite", "path", "zenith", "acc"}`.
 
 **Estrutura de saída:**
 
@@ -55,21 +52,22 @@ outdir/
 
 ### Personalizando ESUN e ACC
 
-Os valores validados são os **padrões**, mas podem ser editados de duas
-formas:
+Os valores ESUN/ACC corrigidos por Moiano et al. (in prep) e NIR são padrões, 
+mas podem ser editados de duas formas:
 
 ```python
-# 1) por chamada — dict por banda (vale para todas as cenas)...
+# 1) dict por banda
 w2m.get_toa(..., esun={"blue": 1935.0, "green": 1872.0, "red": 1550.0, "nir": 1050.0})
 
-# ...ou dict por satélite (só afeta o satélite indicado)
+# dict por satélite
 w2m.get_toa(..., acc={"amazonia1": {"blue": 0.242, "green": 0.312,
                                     "red": 0.215, "nir": 0.186}})
 
-# 2) globalmente, editando os padrões antes de chamar get_toa
+# 2) antes de chamar get_toa
 w2m.constants.ESUN["cbers4a"]["nir"] = 975.0
 ```
-
+building...
+<!--
 ### Filtro de nuvem
 
 `max_cloud >= 0` filtra a consulta pelo percentual de nuvem do **catálogo
@@ -171,3 +169,4 @@ from wfi2mask import (
 
 `convert_scene_to_toa` também aceita `bbox=`, `esun=` e `acc=`, com a
 mesma semântica do `get_toa`.
+-->

@@ -5,7 +5,7 @@
 ```
 Água = (Matiz ∈ [16°, 35°) OU NDWI > 0) E (HAND ≤ 15 m) E (NIR < 0,35) E pixel válido
 ```
-
+<!--
 ### Matiz de Namikawa (R2G3B5)
 
 Composição colorida com **Verde → canal R**, **Vermelho → canal G** e
@@ -53,11 +53,10 @@ ao `NIR < 1000` da escala ×10 000 usada na validação).
 Cada cena é classificada **independentemente**; um pixel é água na
 composição se for classificado como água em **mais de 50 %** das
 observações válidas, com mínimo de `max(2, n_cenas // 3)` observações.
-
+-->
 ## Validação
 
-Limiares validados com Sentinel-2 L2A em 16 áreas no Brasil (F1 contra a
-máscara SCL, agregação simétrica):
+F1 contra a máscara SCL do Sentinel-2
 
 | Área | F1 | Área | F1 |
 |------|----|------|----|
@@ -69,7 +68,7 @@ máscara SCL, agregação simétrica):
 | Xingó | 0,961 | Manso | 0,942 |
 | Jacareí | 0,926 | Itaipu | — |
 | **Castanhão** | **0,578** | **Pantanal** | **0,424** |
-
+<!--
 ## Limitações conhecidas
 
 * **Áreas úmidas rasas (Pantanal)** — lagos rasos e vegetação alagada são
@@ -92,7 +91,7 @@ máscara SCL, agregação simétrica):
   sensores WFI (use o histograma de Matiz como diagnóstico). Os limiares
   são parametrizáveis via `hue_min`/`hue_max` em `get_water_mask`.
 * **Correção Terra–Sol ausente** — erro sazonal de ±3,3 % na TOA.
-
+-->
 ## Referências
 
 * Foley, J.D. et al. (1996). *Computer Graphics: Principles and Practice*. 2ª ed. Addison-Wesley.

@@ -132,6 +132,78 @@ def test_get_water_mask_invalid_path():
         get_water_mask(path=None, bbox=BBOX)
 
 
+def test_resolve_products():
+    from wfi2mask.mask import _resolve_products
+
+    assert _resolve_products(None) is None
+    assert _resolve_products("all") is None
+    assert _resolve_products("cbers4a") == {"cbers4a"}
+    assert _resolve_products(["amazonia1", "S2"]) == {"amazonia1", "sentinel2"}
+    assert _resolve_products("Sentinel-2") == {"sentinel2"}
+    with pytest.raises(ValueError, match="Produto desconhecido"):
+        _resolve_products("landsat9")
+
+
+def test_get_water_mask_product_filter(tmp_path):
+    """product= must restrict which satellites enter the analysis."""
+    toa_dir = tmp_path / "toa"
+    _make_toa(str(toa_dir / "amazonia1" / "toa_AMAZONIA1_WFI_T1.tif"), lake=True)
+    _make_toa(str(toa_dir / "amazonia1" / "toa_AMAZONIA1_WFI_T2.tif"), lake=True)
+    _make_toa(str(toa_dir / "cbers4a" / "toa_CBERS4A_WFI_T3.tif"), lake=True)
+    hand_dir = tmp_path / "hand"
+    _make_hand_tile(str(hand_dir))
+
+    common = dict(path=str(toa_dir), bbox=BBOX, coarse=100,
+                  hand_dir=str(hand_dir), plot=False)
+
+    todos = get_water_mask(outdir=str(tmp_path / "out_all"), **common)
+    assert {s["satellite"] for s in todos["scenes"]} == {"amazonia1", "cbers4a"}
+    assert len(todos["scenes"]) == 3
+
+    so_amz = get_water_mask(product="amazonia1",
+                            outdir=str(tmp_path / "out_amz"), **common)
+    assert {s["satellite"] for s in so_amz["scenes"]} == {"amazonia1"}
+    assert len(so_amz["scenes"]) == 2
+
+    lista = get_water_mask(product=["cbers4a"],
+                           outdir=str(tmp_path / "out_c4a"), **common)
+    assert [s["scene"] for s in lista["scenes"]] == ["CBERS4A_WFI_T3"]
+    # a single scene produces no majority composite
+    assert lista["composite"] is None
+
+    # nothing matches -> clear error mentioning product
+    with pytest.raises(FileNotFoundError, match="cbers4"):
+        get_water_mask(product="cbers4", outdir=str(tmp_path / "out_x"), **common)
+
+
+def test_product_controls_sentinel2_streaming(monkeypatch, tmp_path):
+    """'sentinel2' in product turns streaming on; omitting it turns it off."""
+    import wfi2mask.mask as mask_mod
+
+    toa_dir = tmp_path / "toa"
+    _make_toa(str(toa_dir / "amazonia1" / "toa_AMAZONIA1_WFI_T1.tif"), lake=True)
+    hand_dir = tmp_path / "hand"
+    _make_hand_tile(str(hand_dir))
+
+    chamadas = []
+    monkeypatch.setattr(
+        mask_mod, "_classify_s2_from_cloud",
+        lambda *a, **k: chamadas.append(True),
+    )
+    common = dict(path=str(toa_dir), bbox=BBOX, coarse=100,
+                  hand_dir=str(hand_dir), plot=False)
+
+    # product exclui sentinel2 + include_s2=True -> streaming desligado
+    get_water_mask(product="amazonia1", include_s2=True,
+                   outdir=str(tmp_path / "o1"), **common)
+    assert chamadas == []
+
+    # 'sentinel2' no product -> streaming ligado mesmo com include_s2=False
+    get_water_mask(product=["amazonia1", "sentinel2"],
+                   outdir=str(tmp_path / "o2"), **common)
+    assert chamadas == [True]
+
+
 def test_infer_dates_from_scenes():
     from datetime import date
 

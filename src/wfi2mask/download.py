@@ -225,27 +225,21 @@ def get_toa(
     raw_base = os.path.join(outdir, "raw")
     toa_base = os.path.join(outdir, "toa")
 
-    log("=" * 62)
-    log("wfi2mask.get_toa")
     log(f"  bbox:       {bbox}")
     log(f"  período:    {d0} a {d1}")
     log(f"  produtos:   {', '.join(collections.values())}")
     log(f"  dados brutos (DN) serão armazenados em:  {os.path.abspath(raw_base)}/<satelite>/")
     log(f"  produtos TOA serão armazenados em:       {os.path.abspath(toa_base)}/<satelite>/")
-    log("=" * 62)
 
     api = Cbers4aAPI(user)
 
     # ------------------------------------------------------------------ #
-    # Cloud screening                                                     #
+    # Cloud screening — the INPE catalog's own scene-level percentage.     #
+    # NOTE: it refers to the WHOLE WFI scene (684-866 km swath), so a      #
+    # partially cloudy scene may still be clear over the bbox.             #
     # ------------------------------------------------------------------ #
     cloud_screening = max_cloud is not None and float(max_cloud) >= 0
     inpe_cloud = float(max_cloud) if cloud_screening else 100.0
-    if cloud_screening:
-        log(f"Filtro de nuvem ativo (max_cloud={max_cloud}%): usando o percentual "
-            f"de nuvem do catálogo INPE (nível de cena).")
-        warn("O percentual refere-se à CENA inteira (faixa de 684–866 km) — "
-             "uma cena parcialmente nublada pode estar limpa sobre o seu bbox.")
 
     # EXPERIMENTAL: date-level Sentinel-2 matchup (on hold / em teste)
     clean_dates = None
@@ -253,15 +247,10 @@ def get_toa(
         if not cloud_screening:
             warn("s2_matchup=True requer max_cloud >= 0 — matchup ignorado.")
         else:
-            log(f"[experimental] Matchup Sentinel-2 ativo (tolerância "
-                f"+/-{S2_MATCHUP_TOLERANCE_DAYS} dia)...")
             clean_dates = _s2_clean_dates(bbox, d0, d1, float(max_cloud))
-            if clean_dates is not None:
-                log(f"  {len(clean_dates)} datas Sentinel-2 limpas encontradas no período.")
 
     results = []
     for collection_id, satellite in collections.items():
-        log(f"--- {satellite.upper()} ({collection_id}) ---")
         log("Consultando catálogo INPE...")
         try:
             products_fc = api.query(
@@ -289,7 +278,7 @@ def get_toa(
                 fd = _feature_date(feat)
                 if fd and any(abs(fd - cd) <= tol for cd in clean_dates):
                     kept.append(feat)
-            log(f"  [experimental] Matchup Sentinel-2: {len(kept)} de "
+            log(f"  Matchup Sentinel-2: {len(kept)} de "
                 f"{len(features)} cenas mantidas.")
             features = kept
             if not features:
@@ -385,9 +374,4 @@ def get_toa(
             if meta:
                 results.append(meta)
 
-    log("=" * 62)
-    log(f"Concluído: {len(results)} cena(s) TOA prontas (recortadas no bbox).")
-    log(f"  DN bruto: {os.path.abspath(raw_base)}/<satelite>/<cena>/")
-    log(f"  TOA:      {os.path.abspath(toa_base)}/<satelite>/toa_<cena>.tif")
-    log("Use w2m.get_water_mask(path=...) para gerar a máscara d'água.")
     return results

@@ -35,6 +35,7 @@ from rasterio.warp import Resampling, reproject, transform_bounds
 
 from .algorithm import classify_scene, majority_composite
 from .constants import (
+    COLLECTIONS,
     CONFIDENCE_LABELS,
     DEFAULT_COARSE,
     DEFAULT_HAND_MAX,
@@ -50,6 +51,52 @@ from .constants import (
 from .hand import load_hand_on_grid
 from .plotting import plot_overlay, stretch
 from .utils import log, parse_dates, validate_bbox, warn
+
+
+#: satellite keys accepted by ``product=`` in get_water_mask
+SUPPORTED_SATELLITES = tuple(COLLECTIONS) + ("sentinel2",)
+
+_SATELLITE_ALIASES = {
+    "s2": "sentinel2", "sentinel-2": "sentinel2", "sentinel_2": "sentinel2",
+    "cbers-4": "cbers4", "cbers_4": "cbers4",
+    "cbers-4a": "cbers4a", "cbers_4a": "cbers4a",
+    "amazonia-1": "amazonia1", "amazonia_1": "amazonia1",
+}
+
+
+def _resolve_products(product):
+    """Normalize ``product=`` into a set of satellite keys, or None (= all)."""
+    if product is None or (isinstance(product, str) and product.lower() == "all"):
+        return None
+    items = product if isinstance(product, (list, tuple, set)) else [product]
+    resolved = set()
+    for item in items:
+        key = str(item).strip().lower()
+        key = _SATELLITE_ALIASES.get(key, key)
+        if key not in SUPPORTED_SATELLITES:
+            raise ValueError(
+                f"Produto desconhecido: {item!r}. Use "
+                f"{', '.join(repr(s) for s in SUPPORTED_SATELLITES)}, 'all' "
+                f"ou uma lista desses valores."
+            )
+        resolved.add(key)
+    return resolved
+
+
+def _resolve_satellite(tag, scene_name) -> str:
+    """Satellite key from the GeoTIFF SATELLITE tag, falling back to the id."""
+    return (tag or satellite_from_scene_id(scene_name) or "desconhecido").lower()
+
+
+def _satellite_of_file(toa_path) -> str:
+    """Satellite key of a TOA file on disk (tag first, then the file name)."""
+    scene_name = os.path.basename(toa_path).replace("toa_", "").replace(".tif", "")
+    try:
+        with rasterio.open(toa_path) as src:
+            tag = src.tags().get("SATELLITE")
+    except Exception:  # noqa: BLE001
+        tag = None
+    return _resolve_satellite(tag, scene_name)
 
 
 def _bbox_from_files(toa_files) -> list:
@@ -233,6 +280,7 @@ def get_water_mask(
     hand_dir=None,
     outdir=None,
     plot=True,
+    product=None,
     include_s2=False,
     s2_date=None,
     s2_max_cloud=20,
@@ -286,6 +334,13 @@ def get_water_mask(
         ``./water_mask`` when ``path`` is not given).
     plot : bool
         Save the demonstration plot (true color + overlay). Default True.
+    product : str | list, optional
+        Which satellites go into the analysis (and therefore into the
+        composite): ``'amazonia1'``, ``'cbers4a'``, ``'cbers4'``,
+        ``'sentinel2'``, ``'all'`` (default) or a list of these. Local TOA
+        images of other satellites are ignored. Listing ``'sentinel2'``
+        turns on the cloud streaming (same as ``include_s2=True``); omitting
+        it from an explicit list turns the streaming off.
     include_s2 : bool
         Default False. When True, Sentinel-2 L2A scenes over the bbox are
         streamed from the cloud and classified alongside the WFI scenes
@@ -321,7 +376,35 @@ def get_water_mask(
             glob.glob(os.path.join(path, "**", "toa_*.tif"), recursive=True)
         )
 
+    # ------------------------------------------------------------------ #
+    # Satellite selection (product=)                                      #
+    # ------------------------------------------------------------------ #
+    products = _resolve_products(product)
+    if products is not None:
+        if "sentinel2" in products and not include_s2:
+            include_s2 = True
+        elif "sentinel2" not in products and include_s2:
+            warn("product não inclui 'sentinel2' — as cenas Sentinel-2 da "
+                 "nuvem não serão processadas.")
+            include_s2 = False
+        if toa_files:
+            n_before = len(toa_files)
+            kept, skipped = [], set()
+            for f in toa_files:
+                sat = _satellite_of_file(f)
+                (kept.append(f) if sat in products else skipped.add(sat))
+            toa_files = kept
+            if skipped:
+                log(f"product={sorted(products)}: {len(toa_files)} de {n_before} "
+                    f"imagem(ns) TOA selecionada(s) "
+                    f"(ignorado(s): {', '.join(sorted(skipped))}).")
+
     if not toa_files and not include_s2:
+        if products is not None and path:
+            raise FileNotFoundError(
+                f"Nenhuma imagem TOA de {sorted(products)} encontrada em "
+                f"{os.path.abspath(path)}. Revise product= ou o caminho."
+            )
         raise FileNotFoundError(
             "Nenhuma imagem TOA encontrada: informe em path= um diretório com "
             "arquivos 'toa_*.tif' (saída de wfi2mask.get_toa) e/ou use "
@@ -347,17 +430,14 @@ def get_water_mask(
 
     nir_desc = (f"{nir}" if nir is not None
                 else f"auto ({DEFAULT_NIR_MAX} WFI / {DEFAULT_NIR_MAX_S2} S2)")
-    log("=" * 62)
-    log("wfi2mask.get_water_mask")
     if toa_files:
         log(f"  {len(toa_files)} imagem(ns) TOA em {os.path.abspath(path)}")
     if include_s2:
         log("  Sentinel-2: processamento direto da nuvem (sem download)")
     log(f"  bbox:      {bbox}")
-    log(f"  grade:     {coarse:.0f} m (recorte no bbox + reamostragem)")
+    log(f"  grade:     {coarse:.0f} m")
     log(f"  filtros:   HAND<={hand} m | NDWI>{ndwi} | NIR<{nir_desc} | Hue [{hue_min},{hue_max})")
     log(f"  saídas em: {os.path.abspath(outdir)}")
-    log("=" * 62)
 
     crs, transform, shape, _bounds = _build_grid(bbox, float(coarse))
     log(f"Grade comum: {shape[0]} x {shape[1]} px @ {coarse:.0f} m ({crs})")
@@ -365,7 +445,7 @@ def get_water_mask(
     # ------------------------------------------------------------------ #
     # HAND                                                                #
     # ------------------------------------------------------------------ #
-    log("Carregando dados HAND (download sob demanda se necessário)...")
+    log("Carregando dados HAND...")
     hand_grid = load_hand_on_grid(bbox, shape, transform, crs, hand_dir=hand_dir)
     if hand_grid is None:
         warn("HAND indisponível — classificação prosseguirá SEM o filtro topográfico.")
@@ -431,11 +511,7 @@ def get_water_mask(
                 continue
 
             # satellite: GeoTIFF tag (get_toa products) or scene name
-            satellite = (
-                src.tags().get("SATELLITE")
-                or satellite_from_scene_id(scene_name)
-                or "desconhecido"
-            ).lower()
+            satellite = _resolve_satellite(src.tags().get("SATELLITE"), scene_name)
             is_s2 = satellite == "sentinel2"
 
             blue = _warp_band(src, 1, shape, transform, crs)
@@ -482,9 +558,6 @@ def get_water_mask(
             "Nenhuma cena pôde ser classificada (sem sobreposição com o "
             "bbox, ou nenhuma cena Sentinel-2 no período?)."
         )
-    for r in scene_results:
-        log(f"  {r['scene']} ({r['satellite']}, NIR<{r['nir_max']}): "
-            f"{r['n_water_px']:,d} px de água -> {r['shapefile']}")
 
     # ------------------------------------------------------------------ #
     # Majority-rule composite                                             #
@@ -493,16 +566,10 @@ def get_water_mask(
     composite_conf = None
     if len(scene_results) >= 2:
         agg = majority_composite(np.stack(water_list), np.stack(valid_list))
-        log(f"Composição por regra da maioria (>50 %, min {agg['min_obs']} observações):")
-        n_water_final = int((agg["mask"] == 1).sum())
-        n_reliable = int((agg["mask"] != 255).sum())
-        log(f"  pixels confiáveis: {n_reliable:,d} | água: {n_water_final:,d}")
-
         composite_conf = np.zeros(shape, dtype=np.uint8)
         composite_conf[agg["mask"] == 1] = 1
         composite_shp = os.path.join(outdir, "water_composite_majority.shp")
         _vectorize(composite_conf, transform, crs, composite_shp)
-        log(f"  composto salvo: {composite_shp}")
 
     # ------------------------------------------------------------------ #
     # Demonstration plot                                                  #
@@ -527,7 +594,6 @@ def get_water_mask(
                  else scene_results[0]["scene"])
         png_path = os.path.join(outdir, "water_mask_overlay.png")
         plot_overlay(true_color, conf_for_plot, title, png_path)
-        log(f"Plot de demonstração salvo: {png_path}")
 
     log("Concluído.")
     for r in scene_results:
