@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wfi2mask"
-version = "0.2.0"
+version = "0.3.0"
 description = "Automated water mask detection from WFI images (CBERS-4, CBERS-4A, Amazonia-1) and Sentinel-2 using the Namikawa et al. (2016) Hue algorithm enhanced with NDWI, HAND and NIR filters."
 readme = "README.md"
 requires-python = ">=3.9"

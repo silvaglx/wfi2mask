@@ -5,7 +5,7 @@
 project = "wfi2mask"
 author = "Gabriel Lucas"
 copyright = "2026, Gabriel Lucas"
-release = "0.2.0"
+release = "0.3.0"
 version = release
 
 language = "pt_BR"

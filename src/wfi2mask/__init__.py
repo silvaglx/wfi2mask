@@ -28,7 +28,7 @@ from .hand import get_hand_tiles, tiles_for_bbox
 from .mask import get_water_mask
 from .toa import convert_scene_to_toa
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "get_toa",
