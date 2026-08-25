@@ -14,15 +14,8 @@ resultado = w2m.get_toa(
 )
 ```
 
-O que acontece:
+O catálogo do INPE é consultado para o `bbox` e o `date` informados; os dados brutos (DN) são baixados e salvos em `wfi2mask_data/raw/<satélite>/<cena>/`; cada cena é convertida para reflectância TOA, **recortada no bbox** e salva como GeoTIFF de 4 bandas (1=Azul, 2=Verde, 3=Vermelho, 4=NIR) em `wfi2mask_data/toa/<satélite>/toa_<cena>.tif`. Obs: em caso do `bbox` cair na divisa entre órbitas, **mais de uma cena** é baixada para cobrir toda a área solicitada.
 
-* o catálogo do INPE é consultado para o `bbox` e o período informados;
-* o pacote avisa se o `bbox` cair na divisa entre órbitas — nesse caso
-  **mais de uma cena** é baixada para cobrir toda a área solicitada;
-* os dados brutos (DN) são salvos em `wfi2mask_data/raw/<satélite>/<cena>/`;
-* cada cena é convertida para reflectância TOA, **recortada no bbox** e
-  salva como GeoTIFF de 4 bandas (1=Azul, 2=Verde, 3=Vermelho, 4=NIR) em
-  `wfi2mask_data/toa/<satélite>/toa_<cena>.tif`.
 
 ### Data única
 
