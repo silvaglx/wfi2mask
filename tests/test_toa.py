@@ -6,7 +6,10 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 
-from wfi2mask.constants import ACC_OVERRIDE, ESUN, satellite_from_scene_id
+from wfi2mask.constants import ESUN, satellite_from_scene_id
+
+# ACC publicado no XML de teste — a fonte usada por padrão pelo pacote
+ACC_XML = {"blue": 0.24, "green": 0.31, "red": 0.214, "nir": 0.185}
 from wfi2mask.toa import (
     convert_scene_to_toa,
     get_acc_from_xml,
@@ -142,10 +145,10 @@ def test_convert_scene_to_toa_calibration_override(tmp_path):
     expected = pi * 1.0 * dn / (1000.0 * cos(zen))
     assert blue[0, 0] == pytest.approx(expected, rel=1e-5)
 
-    # per-satellite override that does NOT cover this satellite -> defaults
+    # per-satellite override that does NOT cover this satellite -> XML
     out2 = str(tmp_path / "toa" / "toa_other_sat.tif")
     meta2 = convert_scene_to_toa(str(scene), out2, acc={"cbers4a": ones})
-    assert meta2["acc"] == ACC_OVERRIDE["amazonia1"]
+    assert meta2["acc"] == ACC_XML
 
 
 def test_convert_scene_to_toa(tmp_path):
@@ -166,9 +169,7 @@ def test_convert_scene_to_toa(tmp_path):
         assert src.count == 4
         blue = src.read(1)
 
-    # Expected: pi * ACC_override * DN / (ESUN * cos(zenith))
+    # Expected: pi * ACC(do XML) * DN / (ESUN * cos(zenith))
     zen = radians(90.0 - 62.5)
-    expected = pi * ACC_OVERRIDE["amazonia1"]["blue"] * dn / (
-        ESUN["amazonia1"]["blue"] * cos(zen)
-    )
+    expected = pi * ACC_XML["blue"] * dn / (ESUN["amazonia1"]["blue"] * cos(zen))
     assert blue[0, 0] == pytest.approx(expected, rel=1e-5)

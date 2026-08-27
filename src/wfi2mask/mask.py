@@ -9,16 +9,17 @@ Steps
    The bbox defaults to the extent of the TOA images themselves (which
    get_toa already crops to the requested area).
 3. Download (on demand) and warp the HAND tiles for the bbox.
-4. Classify each scene (Namikawa Hue + NDWI + HAND + NIR filters) into the
-   4 Namikawa et al. (2016) confidence classes and export one shapefile
-   per scene.
+4. Classify each scene (Namikawa Hue + NDWI + HAND [+ optional NIR]) into
+   the 4 Namikawa et al. (2016) confidence classes.
 5. With ``include_s2=True``, stream Sentinel-2 L2A scenes DIRECTLY FROM
-   THE CLOUD (no download) onto the same grid and classify them too —
-   with a PER-PIXEL cloud mask from the SCL band and their own NIR
-   threshold default.
+   THE CLOUD (no download) onto the same grid and classify them too, with
+   a PER-PIXEL cloud mask from the SCL band.
 6. With 2+ scenes (WFI and Sentinel-2 mixed), aggregate with the >50 %
-   majority rule and export a composite shapefile.
-7. Save a demonstration plot (true color + mask overlay).
+   majority rule.
+7. Save the comparison plot (true colour vs water mask).
+
+Vector export (per-scene and composite shapefiles) is currently disabled —
+the function returns the comparison plot and per-scene statistics only.
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ import os
 
 import numpy as np
 import rasterio
-from rasterio import features as rio_features
 from rasterio.crs import CRS
 from rasterio.transform import from_bounds as rio_from_bounds
 from rasterio.warp import Resampling, reproject, transform_bounds
@@ -36,16 +36,17 @@ from rasterio.warp import Resampling, reproject, transform_bounds
 from .algorithm import classify_scene, majority_composite
 from .constants import (
     COLLECTIONS,
-    CONFIDENCE_LABELS,
     DEFAULT_COARSE,
     DEFAULT_HAND_MAX,
     DEFAULT_HUE_MAX,
     DEFAULT_HUE_MIN,
     DEFAULT_NDWI_THRESHOLD,
     DEFAULT_NIR_MAX,
+    DEFAULT_NIR_MAX_BY_LEVEL,
     DEFAULT_NIR_MAX_S2,
     S2_SCALE,
     S2_SCL_INVALID,
+    SR_COVERAGE_START,
     satellite_from_scene_id,
 )
 from .hand import load_hand_on_grid
@@ -64,23 +65,26 @@ _SATELLITE_ALIASES = {
 }
 
 
-def _resolve_products(product):
-    """Normalize ``product=`` into a set of satellite keys, or None (= all)."""
+def _resolve_products(product, default_level="sr", catalog=None):
+    """Normalize ``product=`` into ``(satellites, levels)`` or ``(None, {})``.
+
+    Accepts full product names (``'CB4A-WFI-L4-SR-1'``,
+    ``'CBERS4A_WFI_L4_DN'``, see :func:`wfi2mask.get_products`), the
+    satellite shorthands, ``'all'`` or a list. ``levels`` maps each satellite
+    to the level implied by its product name.
+    """
+    from .stac import resolve_product
+
     if product is None or (isinstance(product, str) and product.lower() == "all"):
-        return None
+        return None, {}
     items = product if isinstance(product, (list, tuple, set)) else [product]
-    resolved = set()
+    satellites, levels = set(), {}
     for item in items:
-        key = str(item).strip().lower()
-        key = _SATELLITE_ALIASES.get(key, key)
-        if key not in SUPPORTED_SATELLITES:
-            raise ValueError(
-                f"Produto desconhecido: {item!r}. Use "
-                f"{', '.join(repr(s) for s in SUPPORTED_SATELLITES)}, 'all' "
-                f"ou uma lista desses valores."
-            )
-        resolved.add(key)
-    return resolved
+        entrada = resolve_product(item, default_level=default_level,
+                                  catalog=catalog)
+        satellites.add(entrada["satellite"])
+        levels[entrada["satellite"]] = entrada["level"]
+    return satellites, levels
 
 
 def _resolve_satellite(tag, scene_name) -> str:
@@ -88,9 +92,54 @@ def _resolve_satellite(tag, scene_name) -> str:
     return (tag or satellite_from_scene_id(scene_name) or "desconhecido").lower()
 
 
+def _resolve_nir(nir, satellite):
+    """NIR threshold for one satellite, or None when the filter is off.
+
+    ``nir`` accepts:
+      * ``None`` (default) — no NIR filter at all;
+      * a number — the same threshold for every scene;
+      * a dict ``{'cbers4': 0.35, 'amazonia1': 0.30}`` — per satellite;
+        satellites absent from the dict get no NIR filter.
+    """
+    if nir is None:
+        return None
+    if isinstance(nir, dict):
+        for chave, valor in nir.items():
+            key = str(chave).strip().lower().rstrip(":")
+            key = _SATELLITE_ALIASES.get(key, key)
+            if key == satellite:
+                return None if valor is None else float(valor)
+        return None
+    return float(nir)
+
+
+def _resolve_level(tag, satellite) -> str:
+    """Processing level of a scene: 'toa' or 'sr'.
+
+    Read from the PRODUCT_LEVEL GeoTIFF tag written by get_toa / the SR
+    streaming. Sentinel-2 L2A is surface reflectance by definition; files
+    without the tag (produced by wfi2mask < 0.4) are assumed to be TOA.
+    """
+    if tag:
+        low = str(tag).strip().lower()
+        if low in DEFAULT_NIR_MAX_BY_LEVEL:
+            return low
+    return "sr" if satellite == "sentinel2" else "toa"
+
+
+def _scene_name_of(path) -> str:
+    """Scene id from a reflectance filename (``refl_<id>.tif``/``toa_<id>.tif``)."""
+    nome = os.path.basename(path)
+    for prefixo in ("refl_", "toa_"):
+        if nome.startswith(prefixo):
+            nome = nome[len(prefixo):]
+            break
+    return nome.replace(".tif", "")
+
+
 def _satellite_of_file(toa_path) -> str:
-    """Satellite key of a TOA file on disk (tag first, then the file name)."""
-    scene_name = os.path.basename(toa_path).replace("toa_", "").replace(".tif", "")
+    """Satellite key of a local file (tag first, then the file name)."""
+    scene_name = _scene_name_of(toa_path)
     try:
         with rasterio.open(toa_path) as src:
             tag = src.tags().get("SATELLITE")
@@ -144,36 +193,6 @@ def _warp_band(src, band_idx, shape, transform, crs,
     return dst
 
 
-def _vectorize(class_array: np.ndarray, transform, crs, out_shp: str) -> int:
-    """Polygonize a class raster (values 1..4) into a shapefile."""
-    import geopandas as gpd
-    from shapely.geometry import shape as shp_shape
-
-    records = []
-    mask_any = class_array > 0
-    if mask_any.any():
-        for geom, value in rio_features.shapes(
-            class_array.astype(np.uint8), mask=mask_any, transform=transform
-        ):
-            code = int(value)
-            records.append(
-                {
-                    "geometry": shp_shape(geom),
-                    "classe": code,
-                    "rotulo": CONFIDENCE_LABELS.get(code, str(code)),
-                }
-            )
-    if records:
-        gdf = gpd.GeoDataFrame(records, geometry="geometry", crs=crs)
-    else:
-        # empty but valid shapefile schema (e.g. fully cloudy scene)
-        gdf = gpd.GeoDataFrame(
-            {"classe": [], "rotulo": []}, geometry=[], crs=crs
-        )
-    gdf.to_file(out_shp)
-    return len(gdf)
-
-
 def _infer_dates_from_scenes(scene_names):
     """Date range (min, max) parsed from scene ids (YYYYMMDD), or None.
 
@@ -196,6 +215,65 @@ def _infer_dates_from_scenes(scene_names):
     if not found:
         return None
     return min(found), max(found)
+
+
+def _classify_wfi_from_cloud(satellites, level, bbox, periodo, max_cloud,
+                             max_images, crs, transform, shape, hand_grid,
+                             hue_min, hue_max, ndwi, hand, nir, register):
+    """Stream WFI L4-SR scenes from the INPE STAC and classify them.
+
+    Nothing is downloaded: each band is read windowed onto the analysis grid.
+    Failures are non-fatal — the run continues with whatever else is
+    available. ``register`` is the per-scene callback of get_water_mask.
+    """
+    from . import stac
+
+    if level != "sr":
+        warn(f"O streaming direto da nuvem só existe para produtos SR "
+             f"(pedido: {level.upper()}). Para TOA, gere os arquivos com "
+             f"get_reflectance(product='*-L4-DN-*', ...) e informe path=.")
+        return
+
+    d0, d1 = periodo
+
+    for satellite in satellites:
+        nir_max_scene = _resolve_nir(nir, satellite)
+        inicio = SR_COVERAGE_START.get(satellite)
+        if level == "sr" and inicio and d0.isoformat() < inicio:
+            warn(f"{satellite}: o produto SR começa em {inicio}; cenas anteriores "
+                 f"a essa data não existem (use get_toa para o período antigo).")
+        try:
+            itens = stac.search_scenes(satellite, level, bbox, d0, d1,
+                                       max_cloud=max_cloud, max_images=max_images)
+        except Exception as exc:  # noqa: BLE001
+            warn(f"{satellite}: busca no STAC falhou ({exc}) — pulando.")
+            continue
+        if not itens:
+            log(f"{satellite}: nenhuma cena no período/critérios.")
+            continue
+        log(f"{satellite}: {len(itens)} cena(s) {level.upper()} da nuvem "
+            f"(sem download).")
+
+        try:
+            from tqdm import tqdm
+            iterator = tqdm(itens, desc=f"{satellite} ({level})", unit="cena")
+        except ImportError:
+            iterator = itens
+
+        for item in iterator:
+            bandas = stac.stream_sr_scene(item, satellite, crs, transform, shape)
+            if bandas is None:
+                continue
+            res = classify_scene(
+                bandas["green"], bandas["red"], bandas["nir"], hand=hand_grid,
+                hue_min=hue_min, hue_max=hue_max,
+                ndwi_threshold=ndwi, hand_max=hand, nir_max=nir_max_scene,
+            )
+            cmask = bandas.get("cmask")
+            valido = stac.cmask_valid(cmask) if cmask is not None else None
+            register(item.id, satellite, nir_max_scene, res,
+                     bandas["red"], bandas["green"], bandas["blue"],
+                     valid_grid=valido, level=level)
 
 
 def _classify_s2_from_cloud(bbox, s2_date, s2_max_cloud, s2_max_images,
@@ -252,7 +330,7 @@ def _classify_s2_from_cloud(bbox, s2_date, s2_max_cloud, s2_max_images,
     except ImportError:
         iterator = dates_items.items()
 
-    nir_max_scene = float(nir) if nir is not None else DEFAULT_NIR_MAX_S2
+    nir_max_scene = _resolve_nir(nir, "sentinel2")
     for d, items in iterator:
         bands = stream_s2_scene(items, crs, transform, shape)
         if bands is None:
@@ -263,14 +341,21 @@ def _classify_s2_from_cloud(bbox, s2_date, s2_max_cloud, s2_max_images,
             hue_min=hue_min, hue_max=hue_max,
             ndwi_threshold=ndwi, hand_max=hand, nir_max=nir_max_scene,
         )
+        valido = ~np.isin(bands["scl"].astype(np.int16), S2_SCL_INVALID)
         register(f"S2_{d.strftime('%Y%m%d')}", "sentinel2", nir_max_scene,
                  res, bands["red"], bands["green"], bands["blue"],
-                 scl_grid=bands["scl"])
+                 valid_grid=valido, level="sr")
 
 
 def get_water_mask(
     path=None,
     bbox=None,
+    date=None,
+    catalog=None,
+    level="sr",
+    max_cloud=20,
+    max_images=None,
+    user=None,
     coarse=DEFAULT_COARSE,
     hand=DEFAULT_HAND_MAX,
     ndwi=DEFAULT_NDWI_THRESHOLD,
@@ -283,26 +368,57 @@ def get_water_mask(
     product=None,
     include_s2=False,
     s2_date=None,
-    s2_max_cloud=20,
+    s2_max_cloud=None,
     s2_max_images=None,
 ):
-    """Generate water-mask shapefiles from WFI TOA images and/or Sentinel-2.
+    """Generate water-mask shapefiles from WFI and/or Sentinel-2 imagery.
 
-    WFI products come from a local folder (output of
-    :func:`wfi2mask.get_toa`). Sentinel-2 L2A is processed DIRECTLY FROM THE
-    CLOUD (``include_s2=True``): the scenes are searched on the Earth Search
-    STAC (AWS Open Data, no credentials) and their bands are read windowed
-    straight onto the analysis grid — nothing is downloaded to disk. Every
-    scene lands on the same grid, so the majority composite can combine WFI
-    and Sentinel-2 observations in one water-mask product.
+    Three sources can be combined in a single run, all landing on the same
+    analysis grid so the majority composite mixes them freely:
+
+    * **WFI surface reflectance** streamed from the INPE STAC — pass
+      ``date`` (and optionally ``product``). Nothing is downloaded: each
+      band is read windowed straight from the cloud, and the per-pixel WFI
+      cloud mask (CMASK) is applied.
+    * **Local files** produced by :func:`wfi2mask.get_toa` — pass ``path``.
+      Their processing level is read from the ``PRODUCT_LEVEL`` tag, so TOA
+      and SR scenes can coexist, each with its own NIR threshold.
+    * **Sentinel-2 L2A** streamed from AWS — ``include_s2=True`` or
+      ``'sentinel2'`` in ``product``.
 
     Parameters
     ----------
     path : str, optional
-        Directory containing valid TOA images (``toa_*.tif``, output of
-        :func:`wfi2mask.get_toa`). Searched recursively. Optional when
-        ``include_s2=True`` (Sentinel-2-only run: pass ``bbox`` and
-        ``s2_date`` instead).
+        Directory containing TOA/SR images (``toa_*.tif``, output of
+        :func:`wfi2mask.get_toa`). Searched recursively. Optional when a
+        streaming source is used.
+    date : str | tuple, optional
+        Period for the STAC streaming, e.g. ``"2025-07-01, 2025-09-30"``
+        (same formats as ``get_toa``). Giving it activates the WFI streaming
+        for the satellites named in ``product``; a single date is expanded
+        to a +/-15-day window.
+    catalog : str, optional
+        ``'INPE_STAC'`` (default) or ``'INPE_CLASSIC'``. With the STAC the
+        WFI scenes are streamed from the cloud and nothing is written to
+        disk. The classic catalogue has no windowed access, so it falls back
+        to the original pipeline: whole scenes are downloaded, converted to
+        TOA under ``outdir`` and then classified — which needs ``user=`` and
+        takes minutes per scene. Sentinel-2 always comes from AWS,
+        regardless of this setting.
+    level : str
+        Processing level of the streamed WFI scenes: ``'sr'`` (default,
+        surface reflectance, no calibration needed, CMASK included) or
+        ``'dn'``. Ignored for ``catalog='INPE_CLASSIC'``, which only has DN.
+        Local files are unaffected — their level comes from their own
+        metadata.
+    user : str, optional
+        E-mail registered at the INPE catalogue; required only when
+        ``catalog='INPE_CLASSIC'`` downloads scenes.
+    max_cloud : float
+        Scene-level cloud filter (%) for the STAC searches. Default 20;
+        ``-1`` disables it.
+    max_images : int, optional
+        Cap on streamed scenes per satellite, most recent first.
     bbox : list, optional
         ``[lon_min, lat_min, lon_max, lat_max]``. Since get_toa already
         crops to the requested bbox, this is OPTIONAL when ``path`` has
@@ -316,11 +432,16 @@ def get_water_mask(
         are rejected. Default 15.
     ndwi : float
         NDWI threshold for dark-water recovery. Default 0.0.
-    nir : float, optional
-        Maximum NIR reflectance (bright-surface rejection). Default ``None``
-        = automatic per scene: 0.35 for WFI TOA and 0.10 for Sentinel-2 L2A
-        surface reflectance (both in the [0, ~1] scale). Pass a number to
-        force the same threshold for every scene.
+    nir : float | dict, optional
+        NIR brightness rejection. **Default ``None`` = no NIR filter at
+        all**, which is the recommended setting while the thresholds are
+        being recalibrated. Pass a dict to enable it per satellite::
+
+            nir={"cbers4": 0.35, "amazonia1": 0.30}
+
+        Satellites absent from the dict keep the filter off. A plain number
+        applies the same threshold to every scene. Reference values live in
+        ``constants.DEFAULT_NIR_MAX_BY_LEVEL``.
     hue_min, hue_max : float
         Namikawa water Hue window (degrees). Defaults 16 and 35. The
         confidence-class boundaries adapt to these values, so the window
@@ -346,22 +467,18 @@ def get_water_mask(
         streamed from the cloud and classified alongside the WFI scenes
         (per-pixel SCL cloud mask included) — no data is written to disk.
     s2_date : str | tuple, optional
-        Sentinel-2 search period (same formats as ``get_toa``'s ``date``).
-        Default: the date range of the WFI scenes found in ``path``
-        (inferred from the scene ids); a single date is expanded to a
-        +/-15-day window. Required when there are no WFI scenes to infer
-        from.
-    s2_max_cloud : float
-        Scene-level ``eo:cloud_cover`` filter for the Sentinel-2 search
-        (default 20 %; -1 disables). The per-pixel SCL mask is applied
-        regardless.
+        Sentinel-2 search period. Defaults to ``date`` and, failing that, to
+        the date range inferred from the WFI scene ids in ``path``.
+    s2_max_cloud : float, optional
+        Cloud filter for the Sentinel-2 search; defaults to ``max_cloud``.
     s2_max_images : int, optional
         Cap on the number of Sentinel-2 DATES used, most recent first.
 
     Returns
     -------
-    dict with keys ``scenes`` (per-scene outputs), ``composite`` (shapefile
-    path or None), ``plot`` (png path or None) and ``outdir``.
+    dict with keys ``scenes`` (one entry per classified scene: ``scene``,
+    ``satellite``, ``level``, ``nir_max``, ``n_water_px``), ``plot`` (path
+    of the comparison PNG, or None) and ``outdir``.
     """
     # ------------------------------------------------------------------ #
     # Input validation                                                    #
@@ -372,14 +489,31 @@ def get_water_mask(
             raise FileNotFoundError(
                 f"path= não é um diretório válido: {path}"
             )
+        # refl_* = get_reflectance (SR e TOA); toa_* = versões anteriores
         toa_files = sorted(
-            glob.glob(os.path.join(path, "**", "toa_*.tif"), recursive=True)
+            glob.glob(os.path.join(path, "**", "refl_*.tif"), recursive=True)
+            + glob.glob(os.path.join(path, "**", "toa_*.tif"), recursive=True)
         )
 
     # ------------------------------------------------------------------ #
     # Satellite selection (product=)                                      #
     # ------------------------------------------------------------------ #
-    products = _resolve_products(product)
+    from .constants import CATALOG_CLASSIC
+    from .stac import WFI_SATELLITES, resolve_catalog
+
+    cat = resolve_catalog(catalog)
+    level = {"toa": "dn"}.get(str(level).lower(), str(level).lower())
+    if level not in ("sr", "dn"):
+        raise ValueError(f"level deve ser 'sr' ou 'dn', recebido {level!r}.")
+    if cat == CATALOG_CLASSIC and level != "dn":
+        level = "dn"   # the classic catalogue only publishes DN
+    if s2_max_cloud is None:
+        s2_max_cloud = max_cloud
+    if s2_date is None and date is not None:
+        s2_date = date
+
+    products, prod_levels = _resolve_products(product, default_level=level,
+                                              catalog=cat)
     if products is not None:
         if "sentinel2" in products and not include_s2:
             include_s2 = True
@@ -387,6 +521,7 @@ def get_water_mask(
             warn("product não inclui 'sentinel2' — as cenas Sentinel-2 da "
                  "nuvem não serão processadas.")
             include_s2 = False
+
         if toa_files:
             n_before = len(toa_files)
             kept, skipped = [], set()
@@ -396,26 +531,42 @@ def get_water_mask(
             toa_files = kept
             if skipped:
                 log(f"product={sorted(products)}: {len(toa_files)} de {n_before} "
-                    f"imagem(ns) TOA selecionada(s) "
+                    f"imagem(ns) local(is) selecionada(s) "
                     f"(ignorado(s): {', '.join(sorted(skipped))}).")
 
-    if not toa_files and not include_s2:
+    # WFI streaming from the INPE STAC is activated by date=
+    stream_wfi = []
+    if date is not None:
+        alvo = sorted(products) if products is not None else list(WFI_SATELLITES)
+        stream_wfi = [s for s in alvo if s in WFI_SATELLITES]
+        if not stream_wfi and not include_s2:
+            warn("date= foi informado mas product= não seleciona nenhum satélite "
+                 "WFI — nada será buscado no catálogo.")
+        if stream_wfi and cat == CATALOG_CLASSIC and not user:
+            raise ValueError(
+                "catalog='INPE_CLASSIC' exige user= (e-mail cadastrado em "
+                "https://www.dgi.inpe.br/catalogo/explore) para baixar as "
+                "cenas. Use catalog='INPE_STAC' para processar direto da "
+                "nuvem, sem cadastro."
+            )
+
+    if not toa_files and not include_s2 and not stream_wfi:
         if products is not None and path:
             raise FileNotFoundError(
                 f"Nenhuma imagem TOA de {sorted(products)} encontrada em "
                 f"{os.path.abspath(path)}. Revise product= ou o caminho."
             )
         raise FileNotFoundError(
-            "Nenhuma imagem TOA encontrada: informe em path= um diretório com "
-            "arquivos 'toa_*.tif' (saída de wfi2mask.get_toa) e/ou use "
-            "include_s2=True para processar Sentinel-2 direto da nuvem."
+            "Nenhuma fonte de dados: informe path= com arquivos 'toa_*.tif', "
+            "e/ou date= para buscar cenas WFI no STAC do INPE, e/ou "
+            "include_s2=True para o Sentinel-2."
         )
 
     if bbox is None:
         if not toa_files:
             raise ValueError(
                 "bbox é obrigatório quando não há imagens TOA locais "
-                "(execução somente Sentinel-2)."
+                "(execução por streaming)."
             )
         bbox = _bbox_from_files(toa_files)
         log(f"bbox não informado — usando a extensão das imagens TOA: "
@@ -428,15 +579,22 @@ def get_water_mask(
                   if path else "./water_mask")
     os.makedirs(outdir, exist_ok=True)
 
-    nir_desc = (f"{nir}" if nir is not None
-                else f"auto ({DEFAULT_NIR_MAX} WFI / {DEFAULT_NIR_MAX_S2} S2)")
+    nir_desc = "desativado" if nir is None else f"{nir}"
+    log(f"  catálogo:  {cat}")
     if toa_files:
-        log(f"  {len(toa_files)} imagem(ns) TOA em {os.path.abspath(path)}")
+        log(f"  {len(toa_files)} imagem(ns) local(is) em {os.path.abspath(path)}")
+    if stream_wfi and cat != CATALOG_CLASSIC:
+        log(f"  WFI {level.upper()} da nuvem (STAC do INPE, sem download): "
+            f"{', '.join(stream_wfi)}")
+    elif stream_wfi:
+        log(f"  WFI do catálogo clássico (download completo): "
+            f"{', '.join(stream_wfi)}")
     if include_s2:
         log("  Sentinel-2: processamento direto da nuvem (sem download)")
     log(f"  bbox:      {bbox}")
     log(f"  grade:     {coarse:.0f} m")
-    log(f"  filtros:   HAND<={hand} m | NDWI>{ndwi} | NIR<{nir_desc} | Hue [{hue_min},{hue_max})")
+    log(f"  filtros:   HAND<={hand} m | NDWI>{ndwi} | NIR: {nir_desc} | "
+        f"Hue [{hue_min},{hue_max})")
     log(f"  saídas em: {os.path.abspath(outdir)}")
 
     crs, transform, shape, _bounds = _build_grid(bbox, float(coarse))
@@ -449,6 +607,28 @@ def get_water_mask(
     hand_grid = load_hand_on_grid(bbox, shape, transform, crs, hand_dir=hand_dir)
     if hand_grid is None:
         warn("HAND indisponível — classificação prosseguirá SEM o filtro topográfico.")
+
+    # ------------------------------------------------------------------ #
+    # Classic catalogue: no streaming — materialise the scenes as files    #
+    # ------------------------------------------------------------------ #
+    if stream_wfi and cat == CATALOG_CLASSIC:
+        from .download import get_reflectance
+
+        log("Catálogo clássico: as cenas serão baixadas e convertidas para "
+            "TOA antes da classificação (não há streaming).")
+        alvo = [p for p in (product if isinstance(product, (list, tuple, set))
+                            else [product]) if p] if product else "all"
+        baixadas = get_reflectance(
+            date=date, bbox=bbox, product=alvo, catalog=cat,
+            max_cloud=max_cloud, max_images=max_images,
+            outdir=os.path.join(outdir, "_classic"), user=user,
+        )
+        toa_files = toa_files + [m["path"] for m in baixadas]
+        stream_wfi = []   # already on disk; classified with the local files
+        if not toa_files:
+            raise RuntimeError(
+                "Nenhuma cena pôde ser baixada do catálogo clássico."
+            )
 
     # ------------------------------------------------------------------ #
     # Per-scene classification                                            #
@@ -466,35 +646,34 @@ def get_water_mask(
     scene_results = []
 
     def _register_scene(scene_name, satellite, nir_max_scene, res,
-                        red, green, blue, scl_grid=None):
-        """Apply the optional SCL mask, vectorize and store one scene."""
-        if scl_grid is not None:
-            # Sentinel-2 per-pixel cloud mask: drop clouds/cirrus/nodata
-            scl_ok = ~np.isin(scl_grid.astype(np.int16), S2_SCL_INVALID)
-            res["confidence"][~scl_ok] = 0
-            res["water"] &= scl_ok
-            res["valid"] &= scl_ok
+                        red, green, blue, valid_grid=None, level="toa"):
+        """Apply the optional per-pixel cloud mask, vectorize and store a scene.
+
+        ``valid_grid`` is a boolean array of clear observations — from the
+        Sentinel-2 SCL band or the WFI CMASK band.
+        """
+        if valid_grid is not None:
+            res["confidence"][~valid_grid] = 0
+            res["water"] &= valid_grid
+            res["valid"] &= valid_grid
         water_list.append(res["water"])
         valid_list.append(res["valid"])
         tc_list["red"].append(red)
         tc_list["green"].append(green)
         tc_list["blue"].append(blue)
-        shp_path = os.path.join(outdir, f"water_{scene_name}.shp")
-        n_polys = _vectorize(res["confidence"], transform, crs, shp_path)
         scene_results.append(
             {
                 "scene": scene_name,
                 "satellite": satellite,
+                "level": level,
                 "nir_max": nir_max_scene,
-                "shapefile": shp_path,
-                "n_polygons": n_polys,
                 "n_water_px": int(res["water"].sum()),
                 "confidence": res["confidence"],
             }
         )
 
     for toa_path in iterator:
-        scene_name = os.path.basename(toa_path).replace("toa_", "").replace(".tif", "")
+        scene_name = _scene_name_of(toa_path)
         scl = None
         with rasterio.open(toa_path) as src:
             # overlap check
@@ -510,16 +689,23 @@ def get_water_mask(
                 warn(f"{scene_name}: menos de 4 bandas — pulando.")
                 continue
 
-            # satellite: GeoTIFF tag (get_toa products) or scene name
-            satellite = _resolve_satellite(src.tags().get("SATELLITE"), scene_name)
+            # satellite / processing level: GeoTIFF tags, falling back to the id
+            tags = src.tags()
+            satellite = _resolve_satellite(tags.get("SATELLITE"), scene_name)
+            # NOTE: must not shadow the `level` argument, which drives the
+            # STAC streaming further down.
+            scene_level = _resolve_level(tags.get("PRODUCT_LEVEL"), satellite)
             is_s2 = satellite == "sentinel2"
 
             blue = _warp_band(src, 1, shape, transform, crs)
             green = _warp_band(src, 2, shape, transform, crs)
             red = _warp_band(src, 3, shape, transform, crs)
             nir_b = _warp_band(src, 4, shape, transform, crs)
-            if is_s2 and src.count >= 5:
-                # SCL is categorical: majority (mode) when coarsening
+            # band 5, when present, is the per-pixel cloud mask: SCL for
+            # Sentinel-2, CMASK for WFI SR (get_reflectance writes it)
+            mask_kind = tags.get("MASK_BAND") or ("SCL" if is_s2 else None)
+            if mask_kind and src.count >= 5:
+                # categorical: majority (mode) when coarsening
                 scl = _warp_band(src, 5, shape, transform, crs,
                                  resampling=Resampling.mode)
 
@@ -529,10 +715,7 @@ def get_water_mask(
             log(f"  {scene_name}: reflectância na escala x{S2_SCALE:.0f} — normalizando.")
             blue, green, red, nir_b = (a / S2_SCALE for a in (blue, green, red, nir_b))
 
-        # NIR threshold: per-scene automatic default unless the user fixed one
-        nir_max_scene = float(nir) if nir is not None else (
-            DEFAULT_NIR_MAX_S2 if is_s2 else DEFAULT_NIR_MAX
-        )
+        nir_max_scene = _resolve_nir(nir, satellite)
 
         res = classify_scene(
             green, red, nir_b, hand=hand_grid,
@@ -540,8 +723,35 @@ def get_water_mask(
             ndwi_threshold=ndwi, hand_max=hand, nir_max=nir_max_scene,
         )
 
+        if scl is None:
+            valido = None
+        elif str(mask_kind).upper() == "CMASK":
+            from .stac import cmask_valid
+            valido = cmask_valid(scl)
+        else:
+            valido = ~np.isin(scl.astype(np.int16), S2_SCL_INVALID)
         _register_scene(scene_name, satellite, nir_max_scene, res,
-                        red, green, blue, scl_grid=scl)
+                        red, green, blue, valid_grid=valido, level=scene_level)
+
+    # ------------------------------------------------------------------ #
+    # WFI streamed from the INPE STAC (date=)                             #
+    # ------------------------------------------------------------------ #
+    if stream_wfi:
+        from datetime import timedelta
+
+        d0, d1 = parse_dates(date)
+        if d0 == d1:
+            d0, d1 = d0 - timedelta(days=15), d1 + timedelta(days=15)
+            log(f"Data única: janela expandida para {d0} a {d1}.")
+        limite = (float(max_cloud)
+                  if max_cloud is not None and float(max_cloud) >= 0 else None)
+        # the level comes from each product name when one was given
+        for satellite in stream_wfi:
+            _classify_wfi_from_cloud(
+                [satellite], prod_levels.get(satellite, level), bbox, (d0, d1),
+                limite, max_images, crs, transform, shape, hand_grid,
+                hue_min, hue_max, ndwi, hand, nir, _register_scene,
+            )
 
     # ------------------------------------------------------------------ #
     # Sentinel-2 streamed from the cloud (include_s2=True)                #
@@ -560,19 +770,16 @@ def get_water_mask(
         )
 
     # ------------------------------------------------------------------ #
-    # Majority-rule composite                                             #
+    # Majority-rule composite (in memory — no vector export for now)      #
     # ------------------------------------------------------------------ #
-    composite_shp = None
     composite_conf = None
     if len(scene_results) >= 2:
         agg = majority_composite(np.stack(water_list), np.stack(valid_list))
         composite_conf = np.zeros(shape, dtype=np.uint8)
         composite_conf[agg["mask"] == 1] = 1
-        composite_shp = os.path.join(outdir, "water_composite_majority.shp")
-        _vectorize(composite_conf, transform, crs, composite_shp)
 
     # ------------------------------------------------------------------ #
-    # Demonstration plot                                                  #
+    # Comparison plot: true colour vs water mask                          #
     # ------------------------------------------------------------------ #
     png_path = None
     if plot:
@@ -600,7 +807,6 @@ def get_water_mask(
         r.pop("confidence", None)
     return {
         "scenes": scene_results,
-        "composite": composite_shp,
         "plot": png_path,
         "outdir": os.path.abspath(outdir),
     }

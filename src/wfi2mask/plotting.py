@@ -35,7 +35,7 @@ def plot_overlay(true_color: np.ndarray, confidence: np.ndarray,
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 7))
     axes[0].imshow(true_color)
-    axes[0].set_title("Cor verdadeira (TOA)", fontsize=11)
+    axes[0].set_title("Cor verdadeira", fontsize=11)
     axes[0].axis("off")
 
     axes[1].imshow(overlay)

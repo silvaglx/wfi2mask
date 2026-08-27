@@ -67,9 +67,11 @@ def classify_scene(
     hue_max: float = DEFAULT_HUE_MAX,
     ndwi_threshold: float = DEFAULT_NDWI_THRESHOLD,
     hand_max: float = DEFAULT_HAND_MAX,
-    nir_max: float = DEFAULT_NIR_MAX,
+    nir_max: float | None = None,
 ) -> dict:
-    """Classify one scene. Bands are raw TOA reflectance arrays (same grid).
+    """Classify one scene. Bands are reflectance arrays on a common grid.
+
+    ``nir_max=None`` (default) disables the NIR brightness filter entirely.
 
     Returns dict with:
       * ``confidence`` : uint8 array, 0 = non-water, 1..4 = Namikawa classes
@@ -107,7 +109,9 @@ def classify_scene(
     confidence[ndwi_water & (confidence > 1)] = 1
 
     # --- Filters ---------------------------------------------------------
-    keep = valid & (nir < nir_max)
+    keep = valid.copy()
+    if nir_max is not None:
+        keep &= nir < float(nir_max)
     if hand is not None:
         hand_ok = np.isfinite(hand) & (hand >= 0) & (hand <= hand_max)
         keep &= hand_ok

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wfi2mask"
-version = "0.3.0"
+version = "0.4.0"
 description = "Automated water mask detection from WFI images (CBERS-4, CBERS-4A, Amazonia-1) and Sentinel-2 using the Namikawa et al. (2016) Hue algorithm enhanced with NDWI, HAND and NIR filters."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -32,8 +32,8 @@ dependencies = [
     "matplotlib>=3.5",
     "tqdm>=4.60",
     "requests>=2.28",
-    "cbers4asat>=0.9",
     "pystac-client>=0.7",
+    "cbers4asat>=0.9",          # catálogo INPE_CLASSIC
 ]
 
 [project.optional-dependencies]

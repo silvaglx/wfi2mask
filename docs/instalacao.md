@@ -4,7 +4,7 @@
 
 * Python ≥ 3.9
 * Conta (e-mail) cadastrada no
-  [catálogo do INPE](https://www.dgi.inpe.br/catalogo/explore) —
+  [catálogo do INPE](https://www.dgi.inpe.br/catalogo/explore)
   necessária para o download das imagens WFI (`get_toa`).
 
 ## Via pip (PyPI)

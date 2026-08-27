@@ -1,5 +1,6 @@
 """End-to-end synthetic test of get_water_mask (no network)."""
 
+import glob
 import os
 
 import numpy as np
@@ -132,15 +133,185 @@ def test_get_water_mask_invalid_path():
         get_water_mask(path=None, bbox=BBOX)
 
 
+def test_resolve_level():
+    from wfi2mask.mask import _resolve_level
+
+    assert _resolve_level("SR", "cbers4a") == "sr"
+    assert _resolve_level("toa", "cbers4a") == "toa"
+    # sem tag: Sentinel-2 e reflectancia de superficie; WFI antigo e TOA
+    assert _resolve_level(None, "sentinel2") == "sr"
+    assert _resolve_level(None, "amazonia1") == "toa"
+    # tag desconhecida cai no padrao
+    assert _resolve_level("l4", "amazonia1") == "toa"
+
+
+def test_stac_collection_ids():
+    from wfi2mask.stac import collection_id
+
+    assert collection_id("cbers4a", "sr") == "CB4A-WFI-L4-SR-1"
+    assert collection_id("amazonia1", "dn") == "AMZ1-WFI-L4-DN-1"
+    assert collection_id("CBERS4", "SR") == "CB4-WFI-L4-SR-1"
+    with pytest.raises(ValueError, match="Sem coleção STAC"):
+        collection_id("sentinel2", "sr")
+
+
+def test_get_reflectance_resolve_products():
+    from wfi2mask.download import _resolve_products as resolver
+
+    todos = resolver("all")
+    assert {p["id"] for p in todos} == {
+        "AMZ1-WFI-L4-SR-1", "AMZ1-WFI-L4-DN-1",
+        "CB4A-WFI-L4-SR-1", "CB4A-WFI-L4-DN-1",
+        "CB4-WFI-L4-SR-1", "CB4-WFI-L4-DN-1",
+    }
+    # nome completo do produto
+    um = resolver("CB4A-WFI-L4-DN-1")
+    assert [(p["id"], p["level"]) for p in um] == [("CB4A-WFI-L4-DN-1", "dn")]
+    # lista mista, sem duplicar
+    varios = resolver(["CB4A-WFI-L4-SR-1", "AMZ1-WFI-L4-DN-1", "CB4A-WFI-L4-SR-1"])
+    assert [p["id"] for p in varios] == ["CB4A-WFI-L4-SR-1", "AMZ1-WFI-L4-DN-1"]
+    # atalho antigo -> produto SR do sensor por padrao...
+    assert resolver("cbers4a")[0]["id"] == "CB4A-WFI-L4-SR-1"
+    # ...mas o alias get_toa mantem o caminho DN->TOA
+    assert resolver("cbers4a", default_level="dn")[0]["id"] == "CB4A-WFI-L4-DN-1"
+    # Sentinel-2 nao e baixavel por get_reflectance
+    with pytest.raises(ValueError, match="get_water_mask"):
+        resolver("sentinel-2-l2a")
+    with pytest.raises(ValueError, match="get_products"):
+        resolver("landsat9")
+
+
+def test_resolve_catalog():
+    from wfi2mask.stac import resolve_catalog
+
+    assert resolve_catalog(None) == "INPE_STAC"
+    assert resolve_catalog("INPE_CLASSIC") == "INPE_CLASSIC"
+    assert resolve_catalog("classic") == "INPE_CLASSIC"
+    assert resolve_catalog("stac") == "INPE_STAC"
+    with pytest.raises(ValueError, match="Catálogo desconhecido"):
+        resolve_catalog("USGS")
+
+
+def test_product_names_are_catalog_specific():
+    from wfi2mask.stac import resolve_product
+
+    # o nome do produto ja determina o catalogo
+    assert resolve_product("CB4A-WFI-L4-DN-1")["catalog"] == "INPE_STAC"
+    assert resolve_product("CBERS4A_WFI_L4_DN")["catalog"] == "INPE_CLASSIC"
+    # atalho resolve dentro do catalogo pedido
+    assert resolve_product("cbers4a", catalog="INPE_CLASSIC")["id"] == \
+        "CBERS4A_WFI_L4_DN"
+    assert resolve_product("cbers4a", catalog="INPE_STAC")["id"] == \
+        "CB4A-WFI-L4-SR-1"
+    # conflito explicito e recusado, nao reinterpretado
+    with pytest.raises(ValueError, match="pertence ao catálogo"):
+        resolve_product("CBERS4A_WFI_L4_DN", catalog="INPE_STAC")
+    # Sentinel-2 vale nos dois catalogos
+    for cat in ("INPE_STAC", "INPE_CLASSIC"):
+        assert resolve_product("s2", catalog=cat)["id"] == "sentinel-2-l2a"
+
+
+def test_classic_requires_user(tmp_path):
+    import wfi2mask as w2m
+
+    with pytest.raises(ValueError, match="user="):
+        w2m.get_reflectance(date="2025-12-01, 2025-12-31", bbox=BBOX,
+                            product="CBERS4A_WFI_L4_DN",
+                            catalog="INPE_CLASSIC", outdir=str(tmp_path))
+
+
+def test_get_products_by_catalog(capsys):
+    import wfi2mask as w2m
+
+    stac = {i["id"] for i in w2m.get_products(catalog="INPE_STAC", verbose=False)}
+    classico = {i["id"] for i in w2m.get_products(catalog="INPE_CLASSIC",
+                                                  verbose=False)}
+    assert "CB4A-WFI-L4-SR-1" in stac and "CBERS4A_WFI_L4_DN" not in stac
+    assert "CBERS4A_WFI_L4_DN" in classico and "CB4A-WFI-L4-SR-1" not in classico
+    # Sentinel-2 aparece nos dois
+    assert "sentinel-2-l2a" in stac and "sentinel-2-l2a" in classico
+    # o classico so tem DN
+    assert all(i["level"] == "dn" for i in
+               w2m.get_products(catalog="INPE_CLASSIC", source="inpe",
+                                verbose=False))
+    # 'all' lista os dois
+    todos = {i["id"] for i in w2m.get_products(catalog="all", verbose=False)}
+    assert stac | classico <= todos
+
+    w2m.get_products(catalog="INPE_CLASSIC")
+    saida = capsys.readouterr().out
+    assert "INPE_CLASSIC" in saida and "cadastro" in saida
+
+
+def test_get_products_listing(capsys):
+    import wfi2mask as w2m
+
+    itens = w2m.get_products()
+    ids = {i["id"] for i in itens}
+    assert "CB4A-WFI-L4-SR-1" in ids and "sentinel-2-l2a" in ids
+    saida = capsys.readouterr().out
+    assert "CB4A-WFI-L4-SR-1" in saida and "PRODUTO" in saida
+
+    # filtros
+    so_sr = w2m.get_products(level="sr", verbose=False)
+    assert all(i["level"] == "sr" for i in so_sr)
+    so_inpe = w2m.get_products(source="inpe", verbose=False)
+    assert all(i["source"] == "inpe" for i in so_inpe)
+    assert "sentinel-2-l2a" not in {i["id"] for i in so_inpe}
+
+
+def test_resolve_nir_dict():
+    from wfi2mask.mask import _resolve_nir
+
+    # None -> filtro ausente
+    assert _resolve_nir(None, "cbers4") is None
+    # escalar -> vale para todos
+    assert _resolve_nir(0.3, "amazonia1") == pytest.approx(0.3)
+    # dicionario por satelite
+    d = {"cbers4": 0.35, "amazonia1": 0.30}
+    assert _resolve_nir(d, "cbers4") == pytest.approx(0.35)
+    assert _resolve_nir(d, "amazonia1") == pytest.approx(0.30)
+    # satelite fora do dicionario -> sem filtro
+    assert _resolve_nir(d, "cbers4a") is None
+    # apelidos e chaves com ':' sobrando sao tolerados
+    assert _resolve_nir({"cbers-4a": 0.4}, "cbers4a") == pytest.approx(0.4)
+    assert _resolve_nir({"cbers4:": 0.4}, "cbers4") == pytest.approx(0.4)
+
+
+def test_nir_filter_off_by_default(tmp_path):
+    """Sem nir=, nenhum pixel deve ser rejeitado por brilho NIR."""
+    toa_dir = tmp_path / "toa"
+    # cena com NIR alto no 'lago': so passa se o filtro NIR estiver desligado
+    _make_toa(str(toa_dir / "toa_AMAZONIA1_WFI_T1.tif"), lake=True)
+    hand_dir = tmp_path / "hand"
+    _make_hand_tile(str(hand_dir))
+    comum = dict(path=str(toa_dir), bbox=BBOX, coarse=100,
+                 hand_dir=str(hand_dir), plot=False)
+
+    sem_nir = get_water_mask(outdir=str(tmp_path / "a"), **comum)
+    assert sem_nir["scenes"][0]["nir_max"] is None
+
+    # limiar impossivelmente baixo remove tudo -> prova que o filtro atua
+    com_nir = get_water_mask(nir={"amazonia1": 0.001},
+                             outdir=str(tmp_path / "b"), **comum)
+    assert com_nir["scenes"][0]["nir_max"] == pytest.approx(0.001)
+    assert com_nir["scenes"][0]["n_water_px"] < sem_nir["scenes"][0]["n_water_px"]
+
+
 def test_resolve_products():
     from wfi2mask.mask import _resolve_products
 
-    assert _resolve_products(None) is None
-    assert _resolve_products("all") is None
-    assert _resolve_products("cbers4a") == {"cbers4a"}
-    assert _resolve_products(["amazonia1", "S2"]) == {"amazonia1", "sentinel2"}
-    assert _resolve_products("Sentinel-2") == {"sentinel2"}
-    with pytest.raises(ValueError, match="Produto desconhecido"):
+    assert _resolve_products(None) == (None, {})
+    assert _resolve_products("all") == (None, {})
+    assert _resolve_products("cbers4a")[0] == {"cbers4a"}
+    assert _resolve_products(["amazonia1", "S2"])[0] == {"amazonia1", "sentinel2"}
+    assert _resolve_products("Sentinel-2")[0] == {"sentinel2"}
+    # o nome completo do produto define o nivel
+    sats, niveis = _resolve_products("CB4A-WFI-L4-DN-1")
+    assert sats == {"cbers4a"} and niveis == {"cbers4a": "dn"}
+    sats, niveis = _resolve_products(["CB4A-WFI-L4-SR-1", "AMZ1-WFI-L4-DN-1"])
+    assert niveis == {"cbers4a": "sr", "amazonia1": "dn"}
+    with pytest.raises(ValueError, match="get_products"):
         _resolve_products("landsat9")
 
 
@@ -168,8 +339,8 @@ def test_get_water_mask_product_filter(tmp_path):
     lista = get_water_mask(product=["cbers4a"],
                            outdir=str(tmp_path / "out_c4a"), **common)
     assert [s["scene"] for s in lista["scenes"]] == ["CBERS4A_WFI_T3"]
-    # a single scene produces no majority composite
-    assert lista["composite"] is None
+    # a exportacao vetorial esta desativada: so ha plot + estatisticas
+    assert "composite" not in lista and "shapefile" not in lista["scenes"][0]
 
     # nothing matches -> clear error mentioning product
     with pytest.raises(FileNotFoundError, match="cbers4"):
@@ -235,23 +406,16 @@ def test_get_water_mask_synthetic(tmp_path):
 
     assert len(out["scenes"]) == 3
     for s in out["scenes"]:
-        assert os.path.exists(s["shapefile"])
         assert s["n_water_px"] > 0
-    assert out["composite"] is not None and os.path.exists(out["composite"])
+        assert s["nir_max"] is None          # filtro NIR desativado por padrao
+    # unica saida em disco: o plot de comparacao
     assert out["plot"] is not None and os.path.exists(out["plot"])
-
-    import geopandas as gpd
-    gdf = gpd.read_file(out["scenes"][0]["shapefile"])
-    assert "classe" in gdf.columns
-    assert (gdf["classe"] == 1).any()
-
-    comp = gpd.read_file(out["composite"])
-    assert len(comp) > 0
+    assert not glob.glob(os.path.join(str(tmp_path / "out"), "*.shp"))
 
 
 def test_get_water_mask_mixed_wfi_s2(tmp_path):
-    """WFI + Sentinel-2 in the same run: automatic NIR default per scene,
-    SCL per-pixel cloud mask, bbox derived from the images (bbox=None)."""
+    """WFI + Sentinel-2 na mesma execucao: NIR por satelite via dicionario,
+    mascara SCL por pixel, bbox derivado das imagens (bbox=None)."""
     toa_dir = tmp_path / "toa"
     for name in ["AMAZONIA1_WFI_TEST1", "AMAZONIA1_WFI_TEST2"]:
         _make_toa(str(toa_dir / "amazonia1" / f"toa_{name}.tif"), lake=True)
@@ -264,6 +428,7 @@ def test_get_water_mask_mixed_wfi_s2(tmp_path):
         path=str(toa_dir),
         bbox=None,  # derived from the TOA images
         coarse=100,
+        nir={"amazonia1": 0.35, "sentinel2": 0.10},   # por satelite
         hand_dir=str(hand_dir),
         outdir=str(tmp_path / "out"),
     )
@@ -283,6 +448,4 @@ def test_get_water_mask_mixed_wfi_s2(tmp_path):
 
     # fully cloudy S2 scene: the SCL mask must reject every pixel
     assert by_scene["S2_20250111"]["n_water_px"] == 0
-
-    # mixed composite still produced
-    assert out["composite"] is not None and os.path.exists(out["composite"])
+    assert out["plot"] is not None and os.path.exists(out["plot"])

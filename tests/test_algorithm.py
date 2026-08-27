@@ -46,11 +46,17 @@ def test_classify_water_by_hue():
 
 
 def test_nir_filter_rejects_bright():
+    """O filtro NIR so atua quando nir_max e informado (padrao: desligado)."""
     shape = (4, 4)
     green = np.full(shape, 0.9)
     red = np.full(shape, 0.3)
-    nir = np.full(shape, 0.5)  # > default 0.35
-    res = classify_scene(green, red, nir, hand=None)
+    nir = np.full(shape, 0.5)
+
+    # padrao: sem filtro NIR -> o pixel brilhante sobrevive
+    assert classify_scene(green, red, nir, hand=None)["water"].any()
+
+    # com limiar explicito -> rejeitado
+    res = classify_scene(green, red, nir, hand=None, nir_max=0.35)
     assert not res["water"].any()
 
 

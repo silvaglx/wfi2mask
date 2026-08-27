@@ -65,13 +65,42 @@ def _find_in_xml(root, keyword):
 
 
 def get_acc_from_xml(xml_path: str) -> dict:
-    """Extract Absolute Calibration Coefficients from a scene XML."""
-    fallback = {b: 1.0 for b in BAND_ORDER}
+    """Extract Absolute Calibration Coefficients from a scene XML file."""
     if not xml_path or not os.path.exists(xml_path):
         warn("XML não encontrado — usando ACC=1.0 (reflectância NÃO calibrada).")
-        return fallback
+        return {b: 1.0 for b in BAND_ORDER}
+    return acc_from_root(ET.parse(xml_path).getroot())
 
-    root = ET.parse(xml_path).getroot()
+
+def get_sun_zenith_from_xml(xml_path: str) -> float:
+    """Solar zenith angle in degrees (90 - sun elevation) from a scene XML file."""
+    if not xml_path or not os.path.exists(xml_path):
+        warn("XML não encontrado — usando zênite solar = 45°.")
+        return 45.0
+    return sun_zenith_from_root(ET.parse(xml_path).getroot())
+
+
+def acc_from_xml_text(text: str) -> dict:
+    """ACC coefficients from XML content held in memory (STAC assets)."""
+    try:
+        return acc_from_root(ET.fromstring(text))
+    except ET.ParseError as exc:
+        warn(f"XML de calibração ilegível ({exc}) — usando ACC=1.0.")
+        return {b: 1.0 for b in BAND_ORDER}
+
+
+def sun_zenith_from_xml_text(text: str) -> float:
+    """Solar zenith from XML content held in memory (STAC assets)."""
+    try:
+        return sun_zenith_from_root(ET.fromstring(text))
+    except ET.ParseError as exc:
+        warn(f"XML de geometria ilegível ({exc}) — usando zênite = 45°.")
+        return 45.0
+
+
+def acc_from_root(root) -> dict:
+    """Extract Absolute Calibration Coefficients from a parsed XML tree."""
+    fallback = {b: 1.0 for b in BAND_ORDER}
     acc_node = _find_in_xml(root, "absoluteCalibration") or _find_in_xml(
         root, "calibrationCoefficient"
     )
@@ -98,13 +127,8 @@ def get_acc_from_xml(xml_path: str) -> dict:
         return fallback
 
 
-def get_sun_zenith_from_xml(xml_path: str) -> float:
-    """Solar zenith angle in degrees (90 - sun elevation) from a scene XML."""
-    if not xml_path or not os.path.exists(xml_path):
-        warn("XML não encontrado — usando zênite solar = 45°.")
-        return 45.0
-
-    root = ET.parse(xml_path).getroot()
+def sun_zenith_from_root(root) -> float:
+    """Solar zenith angle in degrees (90 - sun elevation) from a parsed tree."""
     for keyword in (
         "sunPosition", "sun_position", "sunElevation", "sun_elevation",
         "solarElevation", "solar_elevation", "elevacao", "elevation",
@@ -132,6 +156,44 @@ def get_sun_zenith_from_xml(xml_path: str) -> float:
 
     warn("Elevação solar ausente no XML — usando zênite = 45°.")
     return 45.0
+
+
+# ---------------------------------------------------------------------------
+# DN -> TOA on arrays (shared by the local-file and STAC paths)
+# ---------------------------------------------------------------------------
+
+def toa_from_dn(dn_by_band: dict, acc: dict, esun: dict, zenith: float) -> dict:
+    """Convert DN arrays to TOA reflectance.
+
+    ``rho = (pi * ACC * DN) / (ESUN * cos(theta_sun))``. DN <= 0 (nodata
+    border) is preserved as 0. Returns a dict with the same band keys.
+    """
+    cos_zenith = cos(radians(zenith))
+    out = {}
+    for band, dn in dn_by_band.items():
+        dn = np.asarray(dn, dtype=np.float32)
+        rho = (pi * dn * acc[band]) / (esun[band] * cos_zenith)
+        rho[dn <= 0] = 0.0
+        out[band] = rho.astype(np.float32)
+    return out
+
+
+def resolve_acc(satellite: str, acc_override, xml_text: str | None,
+                xml_path: str | None = None) -> dict:
+    """ACC for a scene: user override > ACC_OVERRIDE table > scene XML.
+
+    ``ACC_OVERRIDE`` ships EMPTY, so by default the coefficients always come
+    from the scene's own ``<absoluteCalibrationCoefficient>`` metadata — the
+    authoritative source published with the product.
+    """
+    resolved = resolve_calibration(acc_override, satellite)
+    if resolved is not None:
+        return resolved
+    if satellite in ACC_OVERRIDE:
+        return dict(ACC_OVERRIDE[satellite])
+    if xml_text is not None:
+        return acc_from_xml_text(xml_text)
+    return get_acc_from_xml(xml_path or "")
 
 
 # ---------------------------------------------------------------------------
