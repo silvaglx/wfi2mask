@@ -1,101 +1,144 @@
 # Guia rápido
 
-## 1. Baixar imagens WFI e gerar reflectância TOA
+## 0. Ver os produtos disponíveis
 
 ```python
 import wfi2mask as w2m
 
-resultado = w2m.get_toa(
-    date="2025-07-01, 2025-09-30",          # intervalo de datas
-    bbox=[-46.65, -23.85, -46.45, -23.65],  # Represa Billings/SP
-    product="amazonia1",
-    user="seu_email@cadastrado_no_inpe.br",
+w2m.get_products()
+```
+
+Imprime o nome de cada produto, plataforma, nível de processamento,
+resolução e catálogo de origem, além das limitações de cada catálogo. É o
+nome do **PRODUTO** dessa lista que você usa em `product=`. Filtre com
+`catalog=`, `level=` ou `source=`, e use `verbose=False` para só receber a
+lista em Python.
+
+## 1. Máscara d'água direto da nuvem
+
+O caminho mais curto não baixa nada e não exige cadastro:
+
+```python
+resultado = w2m.get_water_mask(
+    bbox=[-46.65, -23.85, -46.45, -23.65],   # Represa Billings/SP
+    date="2025-07-01, 2025-09-30",
+    product=["CB4A-WFI-L4-SR-1", "AMZ1-WFI-L4-SR-1"],
+    max_cloud=20,      # % de nuvem da cena; -1 desativa
+    max_images=5,      # no máximo 5 cenas por produto (mais recentes primeiro)
+)
+```
+
+As cenas de reflectância de superfície são lidas **por janela** direto do
+STAC do INPE — só os pixels do `bbox`, já na resolução de análise, trafegam
+pela rede. Os tiles HAND necessários são baixados sob demanda e guardados em
+cache (`~/.wfi2mask/hand`). Cada cena é classificada nas 4 classes de
+confiança de Namikawa et al. (2016); com 2+ cenas aplica-se a composição
+temporal pela **regra da maioria (>50 %)**; e o resultado é um plot
+comparativo salvo em PNG.
+
+### Somando o Sentinel-2
+
+```python
+w2m.get_water_mask(
+    bbox=BBOX, date="2025-07-01, 2025-09-30",
+    product=["CB4A-WFI-L4-SR-1", "sentinel-2-l2a"],
+)
+```
+
+Basta incluir `sentinel-2-l2a` na lista (equivale a `include_s2=True`). As
+cenas entram na mesma composição das WFI, com a máscara SCL aplicada por
+pixel. Também funciona **sem nenhuma cena WFI**, informando só
+`sentinel-2-l2a`.
+
+### Escolhendo o catálogo
+
+```python
+w2m.get_water_mask(..., catalog="INPE_CLASSIC",
+                   user="seu_email@cadastrado_no_inpe.br")
+```
+
+O catálogo clássico não tem leitura por janela, então nesse modo as cenas
+são baixadas por inteiro e convertidas para TOA antes da classificação.
+Veja [Catálogos](catalogos.md) para as diferenças.
+
+## 2. Baixar a reflectância (opcional)
+
+Use quando quiser guardar as imagens, reprocessar várias vezes ou trabalhar
+com TOA:
+
+```python
+resultado = w2m.get_reflectance(
+    date="2025-07-01, 2025-09-30",
+    bbox=[-46.65, -23.85, -46.45, -23.65],
+    product="CB4A-WFI-L4-SR-1",     # ou "CB4A-WFI-L4-DN-1" para TOA
+    max_cloud=20,
     outdir="./wfi2mask_data",
 )
 ```
 
-O catálogo do INPE é consultado para o `bbox` e o `date` informados; os dados brutos (DN) são baixados e salvos em `wfi2mask_data/raw/<satélite>/<cena>/`; cada cena é convertida para reflectância TOA, **recortada no bbox** e salva como GeoTIFF de 4 bandas (1=Azul, 2=Verde, 3=Vermelho, 4=NIR) em `wfi2mask_data/toa/<satélite>/toa_<cena>.tif`. Obs: em caso do `bbox` cair na divisa entre órbitas, **mais de uma cena** é baixada para cobrir toda a área solicitada.
+O nível vem do nome do produto: `-SR-` grava a reflectância de superfície
+como publicada (mais a banda CMASK), `-DN-` converte para TOA com
+`ρ = π·ACC·DN / (ESUN·cos θ_sol)`. Em ambos os casos a saída é recortada no
+bbox, em `wfi2mask_data/reflectance/<PRODUTO>/refl_<cena>.tif`.
 
+Depois é só apontar a pasta:
+
+```python
+w2m.get_water_mask(path="./wfi2mask_data/reflectance")
+```
+
+O `bbox` não precisa ser repetido — a extensão das próprias imagens é usada.
+Cada arquivo carrega uma tag `PRODUCT_LEVEL`, então cenas SR e TOA podem
+conviver na mesma pasta e na mesma composição.
 
 ### Data única
 
 ```python
-w2m.get_toa(
-    date="2025-08-13",   # busca em uma janela de ±15 dias
-    bbox=[-46.65, -23.85, -46.45, -23.65],
-    product="amazonia1",
-    user="seu_email@cadastrado_no_inpe.br",
-)
+w2m.get_reflectance(date="2025-08-13", bbox=BBOX, product="CB4A-WFI-L4-SR-1")
 ```
 
-Com uma única data, o pacote busca a(s) cena(s) **mais próxima(s)** da data
-pedida dentro de uma janela de ±15 dias.
+Com uma única data, o pacote busca na janela de ±15 dias e mantém a(s)
+cena(s) **mais próxima(s)** da data pedida.
 
-### Filtro de nuvem
+```{admonition} O percentual de nuvem é da cena inteira
+:class: warning
 
-Percentual de nuvem a partir do [cbers4asat](https://cbers4asat.readthedocs.io)), correspondente a cena inteira: 
+`max_cloud` filtra pelo percentual de nuvem da **cena WFI completa** (faixa
+de 684–866 km), que pode não representar o seu `bbox`. Nos produtos SR isso
+é compensado pela máscara CMASK por pixel; no TOA, não.
+```
+
+## 3. Ajustes do algoritmo
+
+### Janela de Matiz (Hue)
 
 ```python
-w2m.get_toa(
-    date="2025-06-01, 2025-09-30",
-    bbox=[-46.65, -23.85, -46.45, -23.65],
-    product="amazonia1",
-    max_cloud=20,      # só cenas com ≤ 20 % de nuvem
-    max_images=5,      # baixa no máximo 5 cenas (mais recentes primeiro)
-    user="seu_email@cadastrado_no_inpe.br",
-    s2_matchup=False #default
-)
+w2m.get_water_mask(..., hue_min=14, hue_max=38)
 ```
 
-```{admonition} Matchup Sentinel-2 para filtro de nuvens diretamente sobre a bbox
-:class: note
-
-`s2_matchup=True` e `max_cloud >= 0` filtra as datas WFI que coincidem com Sentinel-2
-(±1 dia) e com nuvem ≤ `max_cloud` sobre a bbox selecionada (em testes).
-```
-
-## 2. Gerar a máscara d'água
+### Filtro NIR (desativado por padrão)
 
 ```python
-resultado = w2m.get_water_mask(
-    path="./wfi2mask_data/toa",   # pasta com as imagens TOA (WFI)
-    coarse=100,                    # resolução desejada do produto final (m), default
-    hand=15,                       # Valor máximo de HAND (m), default
-    include_s2=False,               # if True, adiciona Sentinel-2 no composite de water mask*
-)
+w2m.get_water_mask(..., nir={"cbers4a": 0.20, "amazonia1": 0.15})
 ```
 
-Aplica o algoritmo sobre as imagens TOA recortadas pra bbox armazenadas no
-determinado `path`; tiles HAND são **baixados sob demanda** e guardados em
-cache (`~/.wfi2mask/hand`) para bbox especifico; cada cena é classificada e exportada 
-como shapefile com as 4 classes de confiança de Namikawa et al. (2016); para 2+ cenas, 
-uma composição temporal pela **regra da maioria (>50 %)** é aplicada; 
-gera plot de demonstração salvo em PNG. 
-
-*`include_s2` também funciona **sem cenas WFI**:
-
-```python
-resultado = w2m.get_water_mask(
-    bbox=[-46.65, -23.85, -46.45, -23.65],
-    s2_date="2025-07-01, 2025-09-30",
-    include_s2=True,
-)
-```
-
-### Ajustando a janela de Matiz (Hue)
-
-```python
-w2m.get_water_mask(path="./wfi2mask_data/toa", hue_min=14, hue_max=38)
-```
+Sem `nir=`, nenhum pixel é rejeitado por brilho NIR. Passe um dicionário
+para ligar o filtro por satélite — os que ficarem de fora do dicionário
+continuam sem filtro. Um número simples vale para todas as cenas.
 
 ### Saídas
 
 ```
 water_mask/
-├── water_<cena>.shp              # por cena WFI, campo "classe" = 1..4
-├── water_S2_<data>.shp           # por data Sentinel-2 (include_s2=True)
-├── water_composite_majority.shp  # composição (2+ cenas, WFI + S2)
-└── water_mask_overlay.png        # demonstração
+└── water_mask_overlay.png     # cor verdadeira × máscara d'água
+```
+
+A exportação vetorial está desativada nesta versão. O retorno traz as
+estatísticas por cena:
+
+```python
+{'outdir': ..., 'plot': ...,
+ 'scenes': [{'scene', 'satellite', 'level', 'nir_max', 'n_water_px'}, ...]}
 ```
 
 | classe | label | Matiz (Hue) | Confiança |

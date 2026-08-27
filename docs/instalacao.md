@@ -3,9 +3,12 @@
 ## Requisitos
 
 * Python ≥ 3.9
+* **Nenhum cadastro** é necessário no modo padrão (`catalog='INPE_STAC'`),
+  nem para o Sentinel-2 (AWS Open Data).
 * Conta (e-mail) cadastrada no
-  [catálogo do INPE](https://www.dgi.inpe.br/catalogo/explore)
-  necessária para o download das imagens WFI (`get_toa`).
+  [catálogo do INPE](https://www.dgi.inpe.br/catalogo/explore) — necessária
+  **apenas** para `catalog='INPE_CLASSIC'`, informada em `user=`. Veja
+  [Catálogos](catalogos.md).
 
 ## Via pip (PyPI)
 
