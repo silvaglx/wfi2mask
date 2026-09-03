@@ -71,10 +71,7 @@ O `wfi2mask` é um protótipo em desenvolvimento (v0.4.0). O algoritmo
 original (Namikawa et al., 2016) e aprimoramentos (HAND, NDWI) foram
 validados sobre imagens Sentinel-2 para 16 áreas no Brasil e estão sendo
 transferidos para os sensores WFI. Os limiares de Matiz
-(`hue_min`/`hue_max`) são parametrizáveis e podem precisar de recalibração,
-e o **filtro NIR vem desativado por padrão** justamente porque seus limiares
-ainda não transferem bem entre sensores. Veja
-[Algoritmo e limitações](algoritmo.md).
+(`hue_min`/`hue_max`) são parametrizáveis e podem precisar de recalibração.
 ```
 
 ```{toctree}

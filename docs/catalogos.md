@@ -1,10 +1,10 @@
 # Catálogos
-
+<!--
 O INPE publica o acervo WFI por **dois catálogos independentes**, e o
 instituto ainda não definiu qual é o oficial. O `wfi2mask` suporta os dois,
 selecionáveis pelo parâmetro `catalog=` em `get_products`,
 `get_reflectance` e `get_water_mask`.
-
+-->
 ```python
 w2m.get_water_mask(..., catalog="INPE_STAC")      # padrão
 w2m.get_water_mask(..., catalog="INPE_CLASSIC")
@@ -21,7 +21,7 @@ w2m.get_water_mask(..., catalog="INPE_CLASSIC")
 | Máscara de nuvem | por pixel (CMASK no SR) | não tem |
 | Metadado de nuvem | `eo:cloud_cover` (float) | `cloud_cover` (múltiplos de 10 %) |
 | Streaming em `get_water_mask` | sim | não (baixa e converte antes) |
-
+<!--
 ## Eles não veem as mesmas cenas
 
 Esta é a diferença que mais importa. Medindo sobre um mesmo bbox
@@ -41,7 +41,7 @@ de 10 %.
 
 Ou seja: não existe um catálogo "mais completo" em termos absolutos. A
 escolha é científica, e por isso ela é sua.
-
+-->
 ```{admonition} IDs de cena não são intercambiáveis
 :class: warning
 
@@ -56,9 +56,7 @@ catálogos, use `(data, path, row)`.
 
 ## Nomes de produto por catálogo
 
-Os nomes de produto são **únicos entre catálogos**, então o nome já
-determina de onde a cena vem. Um conflito é recusado, nunca reinterpretado
-em silêncio:
+Os nomes de produto são **únicos entre catálogos**:
 
 ```python
 w2m.resolve_product("CBERS4A_WFI_L4_DN", catalog="INPE_STAC")
@@ -78,8 +76,7 @@ funcionando e resolvem dentro do catálogo pedido:
 ## Sentinel-2
 
 O Sentinel-2 vem sempre do **AWS Open Data** (Earth Search), em qualquer um
-dos modos — o catálogo clássico não tem esse produto. Por isso
-`sentinel-2-l2a` aparece nas duas listagens.
+dos modos. portanto `sentinel-2-l2a` eh o mesmo nas duas listagens.
 
 ## Usando o catálogo clássico
 
@@ -93,17 +90,17 @@ w2m.get_reflectance(
     max_cloud=20,
 )
 ```
-
+<!-->
 Em `get_water_mask`, como não há leitura por janela, o pacote cai no
 pipeline original: baixa as cenas para `outdir/_classic/`, converte para TOA
 e só então classifica. O aviso é explícito, e o `user=` é validado antes de
 qualquer download.
+-->
 
 ```{admonition} Custo do catálogo clássico
 :class: warning
 
-Cada cena é transferida por inteiro antes do recorte — na prática, minutos
-por cena (medimos ~5 min contra ~20 s pelo STAC para a mesma cena). Se o
+Cada cena é transferida por inteiro antes do recorte. Se o
 seu critério não exigir as cenas extras do clássico, o STAC é
-substancialmente mais rápido e não precisa de cadastro.
+substancialmente mais rápido ao definir uma bbox especifica.
 ```

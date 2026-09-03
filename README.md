@@ -22,11 +22,11 @@ ou, para a versão de desenvolvimento:
 ```bash
 pip install git+https://github.com/silvaglx/wfi2mask.git
 ```
-
+<!--
 **Nenhum cadastro é necessário** no modo padrão (STAC do INPE) nem para o
 Sentinel-2. Uma conta no [catálogo do INPE](https://www.dgi.inpe.br/catalogo/explore)
 é exigida apenas se você optar por `catalog='INPE_CLASSIC'`.
-
+-->
 ## Uso rápido
 
 ```python
@@ -53,13 +53,14 @@ w2m.get_water_mask(path="./wfi2mask_data/reflectance")
 ```
 
 ## Catálogos
-
+<!-->
 O INPE publica o acervo WFI por dois catálogos independentes, sem definição
 de qual é o oficial — e eles **não listam as mesmas cenas**. O pacote
 suporta ambos via `catalog='INPE_STAC'` (padrão, sem cadastro, com leitura
 por janela e máscara de nuvem por pixel) ou `catalog='INPE_CLASSIC'`
 (mais cenas, mas exige cadastro e baixa a cena inteira). Detalhes na
 documentação.
+-->
 
 ## Documentação
 
