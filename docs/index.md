@@ -7,14 +7,13 @@ Como o `wfi2mask` funciona?
 
 1. **Catálogo** — consulta os produtos WFI do INPE, seja pelo
    [STAC](https://data.inpe.br/stac/browser/) ou pelo catálogo clássico
-   (via [cbers4asat](https://cbers4asat.readthedocs.io)), à sua escolha;
+   (via [cbers4asat](https://cbers4asat.readthedocs.io));
 2. **Reflectância** — usa a reflectância de superfície (SR) já publicada,
    ou converte os números digitais (DN) para o topo da atmosfera (TOA),
    **sempre recortada no bbox** de interesse;
 3. **Máscara d'água** — aplica o algoritmo de Matiz (Hue) de
    [Namikawa et al. (2016)](algoritmo.md) aprimorado com filtros NDWI e
-   HAND, classificando em **4 níveis de confiança**, e gera um plot
-   comparativo cor verdadeira × máscara.
+   HAND, classificando em **4 níveis de confiança** e gerando um plot de comparacao.
 
 ## Fluxo básico
 
@@ -34,8 +33,7 @@ w2m.get_water_mask(
 )
 ```
 
-Se preferir guardar as imagens em disco (ou trabalhar com TOA), use o passo
-intermediário:
+Opcional: guardar as imagens em disco (ou trabalhar com TOA via catalogo classico):
 
 ```python
 w2m.get_reflectance(date="2025-07-01, 2025-09-30", bbox=BBOX,
